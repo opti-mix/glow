@@ -286,7 +286,7 @@ __kernel void convolutionK_float16(__global float *dest,
         size_t filterBase = getNHWC(filterDim, d, fx, fy, 0);
         size_t srcBase = getNHWC(idim, n, (size_t)ox, (size_t)oy, 0);
 
-        for (size_t fd = 0; fd < idim.c/16; fd ++) {
+        for (size_t fd = 0; fd < idim.c/16; fd++) {
           // Use vload instead of casts, because there is no guarantee that
           // filter or src are aligned.
           sum += vload16(fd, &filter[filterBase]) * vload16(fd, &src[srcBase]); 
@@ -338,9 +338,10 @@ __kernel void convolutionK_float8(__global float *dest,
         size_t filterBase = getNHWC(filterDim, d, fx, fy, 0);
         size_t srcBase = getNHWC(idim, n, (size_t)ox, (size_t)oy, 0);
 
-        for (size_t fd = 0; fd < idim.c/8; fd ++) {
-          // Use vload instead of casts, because there is no guarantee that filter or src are aligned.
-          sum += vload8(fd, &filter[filterBase + 0]) * vload8(fd, &src[srcBase + 0]); 
+        for (size_t fd = 0; fd < idim.c/8; fd++) {
+          // Use vload instead of casts, because there is no guarantee that
+          // filter or src are aligned.
+          sum += vload8(fd, &filter[filterBase]) * vload8(fd, &src[srcBase]); 
         }
       }
     }
