@@ -145,6 +145,9 @@ void ExecutionEngine::generateIR(CompilationMode mode, Function *F) {
     // Optimize the graph again after the backend transformation.
     // In particular, DCE is very likely to be useful.
     ::glow::optimize(F, mode);
+    // Try once more to catch more sunk transposes.
+    //::glow::optimize(F, mode);
+    // F->dumpDAG();
   }
 
   /// Prepare the IR container to handle our function.

@@ -34,9 +34,39 @@
 namespace glow {
 class IRFunction;
 class Backend;
+class ConvolutionInst;
+class OCLConvolutionInst;
+
+/// A helper struct with information about kernels launches.
+struct KernelLaunch {
+  /// Kernel that was launched.
+  cl_kernel kernel_;
+  /// The name of the kernel that was launched.
+  std::string name_;
+  /// Event associated with the start of the kernel.
+  /// Used only when profiling is enabled.
+  cl_event event_;
+  /// Constructor to be used by launching Glow's CL kernels.
+  KernelLaunch(cl_kernel kernel, std::string name, cl_event event)
+      : kernel_(kernel), name_(name), event_(event) {}
+  /// Constructor to be used when launching an "external" CL kernel, e.g.
+  /// provided by such libraries like CLBlast, etc.
+  KernelLaunch(const std::string &name, cl_event event)
+      : kernel_(nullptr), name_(name), event_(event) {}
+};
 
 /// This is the OpenCL backend.
 class OCLBackend final : public Backend {
+  /// A helper type representing a key for the program's cache.
+  /// Each compiled program is uniquely identified by its source code, set of
+  /// compiler options that were used and the device it was compiled for.
+  using ProgramKey =
+      std::tuple<const std::string, const std::string, const cl_device_id>;
+  struct ProgramKeyHash {
+    std::size_t operator()(const ProgramKey &K) const noexcept {
+      return llvm::hash_combine(std::get<0>(K), std::get<1>(K), std::get<2>(K));
+    }
+  };
   /// The Module that holds the IR. This does not own the module.
   IRFunction *F_;
   /// The allocator assigns device memory addresses to the buffers.
@@ -46,16 +76,24 @@ class OCLBackend final : public Backend {
   std::unordered_map<const Value *, size_t> tensors_;
   /// Maps values to Tensors, that are *not* owned by this class.
   std::unordered_map<const Value *, Tensor *> externalTensors_;
+  /// Device identifier provided on the command line.
+  int device_{0};
   /// CL compute device id.
   cl_device_id deviceId_;
   /// CL compute context.
   cl_context context_;
   /// CL compute command queue.
   cl_command_queue commands_;
-  // Stores the compiled kernel bank.
-  cl_program program_;
-  // A pointer to the on-device memory buffer.
+  /// Cache of compiled programs.
+  /// The same source code can be compile with different options (e.g. with
+  /// different set of macro definitions) and/or for a different device and
+  /// would result in different programs.
+  std::unordered_map<ProgramKey, cl_program, ProgramKeyHash> programsCache_;
+  /// A pointer to the on-device memory buffer.
   cl_mem deviceBuffer_{0};
+  /// Required space on the device.
+  size_t requiredSpace_;
+  std::vector<KernelLaunch> kernelLaunches_;
 
 public:
   /// Ctor.
@@ -72,6 +110,8 @@ public:
 
   void doForwardPass() override;
 
+  bool transformPostLowering(Function *F) override;
+
   bool isOpSupported(Kinded::Kind opKind, ElemKind elementTy) const override {
     if (elementTy == ElemKind::Int8QTy) {
       return false;
@@ -82,9 +122,38 @@ public:
   /// @}
 
 private:
-  void copyWeightsToDevice();
+  /// Copies the value from a device to a provided buffer.
+  /// If \p buf is nullptr, the payload of the underlying tensor is used.
+  void copyValueFromDevice(const Value *v, void *buf = nullptr);
+  /// Copies value from the provided buffer to the device.
+  /// If \p buf is nullptr, the payload of the underlying tensor is used.
+  void copyValueToDevice(const Value *v, void *buf = nullptr);
+  void copyMutableWeightsToDevice();
+  void copyConstantWeightsToDevice();
 
-  void copyWeightsFromDevice();
+  void copyMutableWeightsFromDevice();
+
+  void executeConvolution(ConvolutionInst *CC);
+  void executeConvolution(OCLConvolutionInst *CC);
+  /// For debugging only.
+  void executeConvolutionAlt(OCLConvolutionInst *CC);
+
+  cl_mem allocDeviceBuffer(size_t size);
+  void freeDeviceBuffer(cl_mem buf);
+
+  /// Create kernel with a given \p name from a \p program.
+  /// If \p program is nullptr, try to find the kernel with a given \p name
+  /// in any of compiled programs.
+  cl_kernel createKernel(const std::string &name, cl_program program = nullptr);
+
+  /// Create a program from the \p source using provided \p options.
+  cl_program createProgram(const std::string &source,
+                           const std::vector<std::string> &options,
+                           cl_command_queue queue);
+
+  void enqueueKernel(cl_command_queue commands, cl_kernel kernel,
+                     cl_device_id device, llvm::ArrayRef<size_t> global,
+                     std::vector<KernelLaunch> &kernelLaunches);
 
   /// \returns a pointer to the tensor that is saved under \p v.
   Tensor *getTensor(const Value *v) const;

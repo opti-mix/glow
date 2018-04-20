@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "HalideBuffer.h"
 #include "libjit_defs.h"
 
 namespace {
@@ -171,5 +172,44 @@ void libjit_matmul_i8(int8_t *outW, const int8_t *lhsW, const int8_t *rhsW,
       outW[libjit_getXY(outWdims, x, y)] = libjit_clip(s);
     }
   }
+}
+int halide_sgemm_transAB(float _a_, struct halide_buffer_t *_A__buffer,
+                         struct halide_buffer_t *_B__buffer, float _b_,
+                         struct halide_buffer_t *_C__buffer,
+                         struct halide_buffer_t *_result_buffer);
+int halide_sgemm_notrans(float _a_, struct halide_buffer_t *_A__buffer,
+                         struct halide_buffer_t *_B__buffer, float _b_,
+                         struct halide_buffer_t *_C__buffer,
+                         struct halide_buffer_t *_result_buffer);
+int halide_simple_sgemm(struct halide_buffer_t *_A__buffer,
+                        struct halide_buffer_t *_B__buffer,
+                        struct halide_buffer_t *_result_buffer);
+void libjit_matmul_halide_f(float *c, float *a, float *b, const size_t *cDims,
+                            const size_t *aDims, const size_t *bDims) {
+  printf("Call Halide\n");
+  memset(c, 0, cDims[0] * cDims[1] * sizeof(float));
+  // Invoke the halide implementation of the matmul.
+  float alpha = 1.0;
+  float beta = 0.0;
+  Halide::Runtime::Buffer<float, 2> A(a, 0);
+  A.add_dimension_with_stride(aDims[1]);
+  A.add_dimension_with_stride(1);
+  Halide::Runtime::Buffer<float, 2> B(b, bDims[1], bDims[0]);
+  Halide::Runtime::Buffer<float, 2> C(c, cDims[1], cDims[0]);
+  for (unsigned i = 0; i < 15; ++i) {
+    printf("%.3f ", c[i]);
+  }
+  printf("\n");
+  // halide_sgemm_transAB(alpha, A.raw_buffer(), B.raw_buffer(), beta,
+  // C.raw_buffer(), C.raw_buffer());  halide_sgemm_notrans(alpha,
+  // A.raw_buffer(), B.raw_buffer(), beta, C.raw_buffer(), C.raw_buffer())i;
+  auto old_raw_buffer = C.raw_buffer();
+  halide_simple_sgemm(A.raw_buffer(), B.raw_buffer(), C.raw_buffer());
+  assert(old_raw_buffer->host == (uint8_t *)c);
+  assert(old_raw_buffer->host == C.raw_buffer()->host);
+  for (unsigned i = 0; i < 15; ++i) {
+    printf("%.3f ", c[i]);
+  }
+  printf("\n");
 }
 }

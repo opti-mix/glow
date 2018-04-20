@@ -1,5 +1,13 @@
 add_library(OpenCL
-            OpenCL.cpp)
+            OpenCL.cpp
+            Transforms.cpp
+            LibDNNSupport.cpp)
+
+target_include_directories(OpenCL
+                           PUBLIC
+                           /Users/rlevenstein/src/libdnn/include
+                           /Users/rlevenstein/src/libdnn/build
+                           )
 
 target_link_libraries(OpenCL
                       PRIVATE
@@ -10,4 +18,8 @@ target_link_libraries(OpenCL
 
 target_link_libraries(OpenCL
                       PRIVATE
-                      OpenCL::OpenCL)
+                      OpenCL::OpenCL
+                      CLBlast
+                      # Use libdnn.
+                      /Users/rlevenstein/src/libdnn/build/src/libgreentea_libdnn.dylib
+                      )

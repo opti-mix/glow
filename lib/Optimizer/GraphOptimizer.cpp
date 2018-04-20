@@ -208,108 +208,133 @@ static Node *simplifyNode(Node *node, Function *F) {
 /// Code Sinking.
 static void sinkCode(Function *F) {
   auto &nodes = F->getNodes();
+  bool Changed = true;
+  // Perform sinking until a fixed-point is reached.
+  while (Changed) {
+    Changed = false;
+    // For each node:
+    for (auto const &node : nodes) {
+      // Sink Transpose below batch normalization nodes:
+      if (auto *BN = dyn_cast<BatchNormalizationNode>(node)) {
+        auto *TR = dyn_cast<TransposeNode>(BN->getInput());
 
-  // For each node:
-  for (auto const &node : nodes) {
-    // Sink Transpose below batch normalization nodes:
-    if (auto *BN = dyn_cast<BatchNormalizationNode>(node)) {
-      auto *TR = dyn_cast<TransposeNode>(BN->getInput());
+        if (!TR) {
+          continue;
+        }
 
-      if (!TR) {
+        // Figure out where we transposed the channel index for batch
+        // normalization.
+        unsigned idx = BN->getChannelIdx();
+        unsigned newChannelIdx = TR->getShuffle()[idx];
+
+        auto *NewBN = F->createBatchNormalization(
+            BN->getName(), TR->getInput(), BN->getBias(), BN->getScale(),
+            BN->getMean(), BN->getVar(), newChannelIdx, BN->getEpsilon(),
+            BN->getMomentum());
+        auto *newTR =
+            F->createTranspose(TR->getName(), NewBN, TR->getShuffle());
+
+        BN->getResult().replaceAllUsesOfWith(newTR);
+        Changed = true;
         continue;
       }
 
-      // Figure out where we transposed the channel index for batch
-      // normalization.
-      unsigned idx = BN->getChannelIdx();
-      unsigned newChannelIdx = TR->getShuffle()[idx];
+      // Sink Transpose below batch RELU nodes.
+      if (auto *RL = dyn_cast<ReluNode>(node)) {
+        auto *TR = dyn_cast<TransposeNode>(RL->getInput());
 
-      auto *NewBN = F->createBatchNormalization(
-          BN->getName(), TR->getInput(), BN->getBias(), BN->getScale(),
-          BN->getMean(), BN->getVar(), newChannelIdx, BN->getEpsilon(),
-          BN->getMomentum());
-      auto *newTR = F->createTranspose(TR->getName(), NewBN, TR->getShuffle());
+        if (!TR) {
+          continue;
+        }
 
-      BN->getResult().replaceAllUsesOfWith(newTR);
-      continue;
-    }
-
-    // Sink Transpose below batch RELU nodes.
-    if (auto *RL = dyn_cast<ReluNode>(node)) {
-      auto *TR = dyn_cast<TransposeNode>(RL->getInput());
-
-      if (!TR) {
+        auto *NRL = F->createRELU(RL->getName(), TR->getInput());
+        auto *newTR = F->createTranspose(TR->getName(), NRL, TR->getShuffle());
+        RL->getResult().replaceAllUsesOfWith(newTR);
+        Changed = true;
         continue;
       }
 
-      auto *NRL = F->createRELU(RL->getName(), TR->getInput());
-      auto *newTR = F->createTranspose(TR->getName(), NRL, TR->getShuffle());
-      RL->getResult().replaceAllUsesOfWith(newTR);
-      continue;
-    }
+      // Sink Transpose below Sigmoid nodes.
+      if (auto *SI = dyn_cast<SigmoidNode>(node)) {
+        auto *TR = dyn_cast<TransposeNode>(SI->getInput());
 
-    // Sink Transpose below Sigmoid nodes.
-    if (auto *SI = dyn_cast<SigmoidNode>(node)) {
-      auto *TR = dyn_cast<TransposeNode>(SI->getInput());
+        if (!TR) {
+          continue;
+        }
 
-      if (!TR) {
+        auto *NSI = F->createSigmoid(SI->getName(), TR->getInput());
+        auto *newTR = F->createTranspose(TR->getName(), NSI, TR->getShuffle());
+        SI->getResult().replaceAllUsesOfWith(newTR);
+        Changed = true;
         continue;
       }
 
-      auto *NSI = F->createSigmoid(SI->getName(), TR->getInput());
-      auto *newTR = F->createTranspose(TR->getName(), NSI, TR->getShuffle());
-      SI->getResult().replaceAllUsesOfWith(newTR);
-      continue;
-    }
+      // Sink Transpose below Tanh nodes.
+      if (auto *TN = dyn_cast<TanhNode>(node)) {
+        auto *TR = dyn_cast<TransposeNode>(TN->getInput());
 
-    // Sink Transpose below Tanh nodes.
-    if (auto *TN = dyn_cast<TanhNode>(node)) {
-      auto *TR = dyn_cast<TransposeNode>(TN->getInput());
+        if (!TR) {
+          continue;
+        }
 
-      if (!TR) {
+        auto *NTN = F->createTanh(TN->getName(), TR->getInput());
+        auto *newTR = F->createTranspose(TR->getName(), NTN, TR->getShuffle());
+        TN->getResult().replaceAllUsesOfWith(newTR);
+        Changed = true;
         continue;
       }
 
-      auto *NTN = F->createTanh(TN->getName(), TR->getInput());
-      auto *newTR = F->createTranspose(TR->getName(), NTN, TR->getShuffle());
-      TN->getResult().replaceAllUsesOfWith(newTR);
-      continue;
-    }
+      // Merge consecutive Transpose operations.
+      if (auto *TR1 = dyn_cast<TransposeNode>(node)) {
+        auto *TR2 = dyn_cast<TransposeNode>(TR1->getInput());
 
-    // Merge consecutive Transpose operations.
-    if (auto *TR1 = dyn_cast<TransposeNode>(node)) {
-      auto *TR2 = dyn_cast<TransposeNode>(TR1->getInput());
+        if (!TR2) {
+          continue;
+        }
 
-      if (!TR2) {
-        continue;
+        auto mask1 = TR1->getShuffle();
+        auto mask2 = TR2->getShuffle();
+        assert(mask1.size() == mask2.size() && "Invalid mask size");
+
+        // The two transposes are reversing one another. We can skip both of
+        // them alltogether.
+        if (isIdentityShuffle(mask1, mask2)) {
+          TR1->getResult().replaceAllUsesOfWith(TR2->getInput());
+          Changed = true;
+          continue;
+        }
       }
 
-      auto mask1 = TR1->getShuffle();
-      auto mask2 = TR2->getShuffle();
-      assert(mask1.size() == mask2.size() && "Invalid mask size");
-
-      // The two transposes are reversing one another. We can skip both of them
-      // alltogether.
-      if (isIdentityShuffle(mask1, mask2)) {
-        TR1->getResult().replaceAllUsesOfWith(TR2->getInput());
-        continue;
-      }
-    }
-
-    // Sink Transpose below Arithmetic nodes. Note: For simplicity, we
-    // assume for the arithmetic node, LHS is the 0th input, RHS is 1st, and
-    // Result is 0th result.
-    if (node->isArithmetic()) {
+      // Sink Transpose below Arithmetic nodes. Note: For simplicity, we
+      // assume for the arithmetic node, LHS is the 0th input, RHS is 1st, and
+      // Result is 0th result.
+      if (node->isArithmetic()) {
 #define GET_LHS(NODE_) NODE_->getNthInput(0)
 #define GET_RHS(NODE_) NODE_->getNthInput(1)
       TransposeNode *LTR = dyn_cast<TransposeNode>(GET_LHS(node));
       TransposeNode *RTR = dyn_cast<TransposeNode>(GET_RHS(node));
-#undef GET_LHS
-#undef GET_RHS
 
       if (!LTR || !RTR) {
-        continue;
+        // If one of the sides is a splat, it can be seen as
+        // transpose (splat').
+        if (isa<SplatNode>(GET_LHS(node)) && RTR) {
+          auto *SN = dyn_cast<SplatNode>(GET_LHS(node));
+          auto *NS = F->createSplat("splat", RTR->getInput().getType(),
+                                    SN->getValue());
+          LTR = F->createTranspose("transpose", NS, RTR->getShuffle());
+          Changed = true;
+        } else if (isa<SplatNode>(GET_RHS(node)) && LTR) {
+          auto *SN = dyn_cast<SplatNode>(GET_RHS(node));
+          auto *NS = F->createSplat("splat", LTR->getInput().getType(),
+                                    SN->getValue());
+          LTR = F->createTranspose("transpose", NS, LTR->getShuffle());
+          Changed = true;
+        } else {
+          continue;
+        }
       }
+#undef GET_LHS
+#undef GET_RHS
       // The masks of the transposes on both sizes must match.
       if (LTR->getShuffle() != RTR->getShuffle()) {
         continue;
@@ -336,6 +361,7 @@ static void sinkCode(Function *F) {
       }
 #undef ARITHMETIC_CASE
 
+      Changed = true;
       auto *newTR =
           F->createTranspose(LTR->getName(), newAN, LTR->getShuffle());
 #define GET_RESULT(NODE_) NODE_->getNthResult(0)
@@ -390,9 +416,13 @@ static void sinkCode(Function *F) {
           CN->getName(), {L->getInput(), R->getInput()}, newChannelIdx);
       auto *newTR = F->createTranspose(L->getName(), newCN, L->getShuffle());
       CN->getResult().replaceAllUsesOfWith(newTR);
+      Changed = true;
     }
 
   } // For all nodes in the graph.
+  // Perform Dead Code Elimination.
+  DCE(F);
+  }
 }
 
 /// Pool optimization.

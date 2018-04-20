@@ -15,6 +15,10 @@ add_library(CPURuntime
 set_target_properties(CPURuntime
                       PROPERTIES
                         CXX_STANDARD 11)
+target_include_directories(CPURuntime 
+                           PUBLIC
+                           ~/src/Halide/src/runtime
+                           ~/src/Halide/src)
 target_compile_options(CPURuntime
                        PRIVATE
                          -ffast-math
@@ -51,6 +55,8 @@ add_library(CPUBackend
             LLVMIRGen.cpp
             CPUBackend.cpp)
 
+file(GLOB HALIDE_LIBRARIES "/Users/rlevenstein/src/build/Halide/lib/*.dylib")
+
 llvm_map_components_to_libnames(LLVM_TARGET_LIBRARIES ${LLVM_TARGETS_TO_BUILD})
 target_link_libraries(CPUBackend
                       PRIVATE
@@ -76,5 +82,11 @@ target_link_libraries(CPUBackend
                         LLVMExecutionEngine
                         LLVMInterpreter
                         LLVMSupport
-                        LLVMPasses)
+                        LLVMPasses
+                      PUBLIC
+                        /Users/rlevenstein/src/build/Halide/genfiles/halide_rt_host/halide_rt_host.a
+                        /Users/rlevenstein/src/build/Halide/genfiles/halide_sgemm_transAB/halide_sgemm_transAB.a
+                        /Users/rlevenstein/src/build/Halide/genfiles/halide_sgemm_notrans/halide_sgemm_notrans.a
+                        /Users/rlevenstein/src/build/Halide/genfiles/halide_simple_sgemm/halide_simple_sgemm.a
+                        )
 add_dependencies(CPUBackend CPURuntime)

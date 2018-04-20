@@ -23,7 +23,7 @@ run: resnet50
 	done
 
 # Build executable for floating point resnet50.
-resnet50: build/main.o build/resnet50.o
+resnet50: download_weights build/main.o build/resnet50.o
 	${CXX} -o build/resnet50 build/resnet50.o build/main.o -lpng
 
 profile.yml: download_weights
