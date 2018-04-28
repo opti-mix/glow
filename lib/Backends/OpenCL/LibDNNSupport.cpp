@@ -19,7 +19,7 @@
 #include "device.hpp"
 #include "libdnn.hpp"
 
-#define DEBUG(X) X
+//#define DEBUG(X) X
 
 using namespace glow;
 using namespace greentea;
@@ -37,10 +37,329 @@ void setKernelLocalArg(cl_kernel kernel, unsigned argIdx, size_t size) {
   GLOW_ASSERT(err == CL_SUCCESS && "Unable to set parameter");
 }
 
-#if 1
+#if 0
+#define DEFINE_GPU_BINARY_DATA_PARALLEL_KERNEL(name, type, body)               \
+  __kernel void name##K##16(__global type * dest, __global type * lhs,         \
+                            __global type * rhs) {                             \
+    size_t j = get_global_id(0);                                               \
+    {                                                                          \
+      float8 LHS = vload8(j * 2, lhs);                                         \
+      float8 RHS = vload8(j * 2, rhs);                                         \
+      float8 VAL = body;                                                       \
+      vstore8(VAL, j * 2, dest);                                               \
+    }                                                                          \
+    {                                                                          \
+      float8 LHS = vload8(j * 2 + 1, lhs);                                     \
+      float8 RHS = vload8(j * 2 + 1, rhs);                                     \
+      float8 VAL = body;                                                       \
+      vstore8(VAL, j * 2 + 1, dest);                                           \
+    }                                                                          \
+  }                                                                            \
+  __kernel void name##W##16(__global void *mem, cl_uint32_t dest,              \
+                            cl_uint32_t lhs, cl_uint32_t rhs) {                \
+    name##K##16(&mem[dest], &mem[lhs], &mem[rhs]);                             \
+  }                                                                            \
+  __kernel void name##K##8(__global type * dest, __global type * lhs,          \
+                           __global type * rhs) {                              \
+    size_t j = get_global_id(0);                                               \
+    float8 LHS = vload8(j, lhs);                                               \
+    float8 RHS = vload8(j, rhs);                                               \
+    float8 VAL = body;                                                         \
+    vstore8(VAL, j, dest);                                                     \
+  }                                                                            \
+  __kernel void name##W##8(__global void *mem, cl_uint32_t dest,               \
+                           cl_uint32_t lhs, cl_uint32_t rhs) {                 \
+    name##K##8(&mem[dest], &mem[lhs], &mem[rhs]);                              \
+  }                                                                            \
+  __kernel void name##K(__global type *dest, __global type *lhs,               \
+                        __global type *rhs) {                                  \
+    size_t i = get_global_id(0);                                               \
+    type RHS = rhs[i];                                                         \
+    type LHS = lhs[i];                                                         \
+    dest[i] = body;                                                            \
+  }                                                                            \
+  __kernel void name##W(__global void *mem, cl_uint32_t dest, cl_uint32_t LHS, \
+                        cl_uint32_t RHS) {                                     \
+    name##K(&mem[dest], &mem[LHS], &mem[RHS]);                                 \
+  }
+
+#define DEFINE_GPU_UNARY_DATA_PARALLEL_KERNEL(name, type, body)                \
+  __kernel void name##K##16(__global type * dest, __global type * src) {       \
+    size_t j = get_global_id(0);                                               \
+    {                                                                          \
+      float8 SRC = vload8(j * 2, src);                                         \
+      float8 VAL = body;                                                       \
+      vstore8(VAL, j * 2, dest);                                               \
+    }                                                                          \
+    {                                                                          \
+      float8 SRC = vload8(j * 2 + 1, src);                                     \
+      float8 VAL = body;                                                       \
+      vstore8(VAL, j * 2 + 1, dest);                                           \
+    }                                                                          \
+  }                                                                            \
+  __kernel void name##W##16(__global void *mem, cl_uint32_t dest,              \
+                            cl_uint32_t src) {                                 \
+    name##K##16(&mem[dest], &mem[src]);                                        \
+  }                                                                            \
+  __kernel void name##K##8(__global type * dest, __global type * src) {        \
+    size_t j = get_global_id(0);                                               \
+    float8 SRC = vload8(j, src);                                               \
+    float8 VAL = body;                                                         \
+    vstore8(VAL, j, dest);                                                     \
+  }                                                                            \
+  __kernel void name##W##8(__global void *mem, cl_uint32_t dest,               \
+                           cl_uint32_t src) {                                  \
+    name##K##8(&mem[dest], &mem[src]);                                         \
+  }                                                                            \
+  __kernel void name##K(__global type *dest, __global type *lhs,               \
+                        __global type *rhs) {                                  \
+    size_t i = get_global_id(0);                                               \
+    type RHS = rhs[i];                                                         \
+    type LHS = lhs[i];                                                         \
+    dest[i] = body;                                                            \
+  }                                                                            \
+  __kernel void name##W(__global void *mem, cl_uint32_t dest,                  \
+                        cl_uint32_t src) {                                     \
+    name##K(&mem[dest], &mem[src]);                                            \
+  }
+
+DEFINE_GPU_BINARY_DATA_PARALLEL_KERNEL(elementadd, float, LHS + RHS)
+DEFINE_GPU_BINARY_DATA_PARALLEL_KERNEL(elementsub, float, LHS - RHS)
+DEFINE_GPU_BINARY_DATA_PARALLEL_KERNEL(elementmul, float, LHS *RHS)
+DEFINE_GPU_BINARY_DATA_PARALLEL_KERNEL(elementdiv, float, LHS / RHS)
+DEFINE_GPU_BINARY_DATA_PARALLEL_KERNEL(elementmax, float, max(LHS, RHS))
+DEFINE_GPU_BINARY_DATA_PARALLEL_KERNEL(elementmin, float, min(LHS, RHS))
+// DEFINE_GPU_BINARY_DATA_PARALLEL_KERNEL(elementcmplte, float, LHS <= RHS)
+
+DEFINE_GPU_UNARY_DATA_PARALLEL_KERNEL(elementmin, float, tanh(SRC))
+
+#undef DEFINE_GPU_BINARY_DATA_PARALLEL_KERNEL
+#undef DEFINE_GPU_UNARY_DATA_PARALLEL_KERNEL
+#endif
+
+#if 0
 void OCLBackend::executeConvolution(ConvolutionInst *CC) {
   GLOW_UNREACHABLE("OpenCL supports only convolutions using NCHW format");
 }
+#endif
+
+#if 1
+#if 0
+__kernel __attribute__((reqd_work_group_size(16, 16, 1)))
+__attribute__((vec_type_hint(Dtype4))) void
+conv_forward_mem(__global void *mem, unsigned im_in_offset, unsigned wg_offset,
+                 unsigned bias_offset, unsigned im_out_offset) {
+  __global const Dtype *im_in = &mem[im_in_offset];
+  __global const Dtype *wg = &mem[wg_offset];
+  __global const Dtype *bias = &mem[bias_offset];
+  __global Dtype *im_out = &mem[im_out_offset];
+  // Thread identifiers.
+  // Local row ID (max: RTSM=TSM/WPTM).
+  const int_tp tidn = get_local_id(0);
+  // Local col ID (max: RTSN=TSN/WPTN).
+  const int_tp tidm = get_local_id(1);
+  // Work-group offset.
+  const int_tp offN = TSN * get_group_id(0);
+  // Work-group offset.
+  const int_tp offM = TSM * get_group_id(1);
+  // Local tile memory.
+  // Asub for loading weights & shuffling the output.
+  volatile __local Dtype Asub[64][8 + v_pad_A];
+  // Bsub for loading the input image and shuffling the output image.
+  volatile __local Dtype Bsub[8][64 + v_pad_B];
+  int_tp batch = get_global_id(2);
+  __global const Dtype *Aptr = wg;
+  __global const Dtype *Bptr = im_in + v_B_off * batch;
+  __global Dtype *Cptr = im_out + v_C_off * batch;
+  __global const Dtype *Dptr = bias;
+  // Initialize the accumulation registers.
+  {
+    Dtype4 Creg[WPTM][WPTN / VWN];
+// Initialize the accumulation registers.
+#pragma unroll
+    for (int_tp wm = 0; wm < WPTM; ++wm) {
+#pragma unroll
+      for (int_tp wn = 0; wn < WPTN / VWN; ++wn) {
+        VEC_4_0(Creg[wm][wn]) = 0.0;
+        VEC_4_1(Creg[wm][wn]) = 0.0;
+        VEC_4_2(Creg[wm][wn]) = 0.0;
+        VEC_4_3(Creg[wm][wn]) = 0.0;
+      }
+    }
+    {
+// Loop over all tiles.
+#pragma unroll 1
+      for (int_tp t = 0; t < v_num_tiles; ++t) {
+        // Load one tile of A into local memory.
+        {
+#pragma unroll 4
+          for (int_tp la = 0; la < LPTA; ++la) {
+            int_tp tid = tidm * RTSN + tidn;
+            int_tp id = la * RTSN * RTSM + tid;
+            int_tp row = id / TSK;
+            int_tp col = id % TSK;
+            int_tp tiledIndex = TSK * t + col;
+            if ((offM + row) < M && tiledIndex < K) {
+              Asub[row][col] = Aptr[(offM + row) * K + tiledIndex];
+            } else {
+              Asub[row][col] = 0.0;
+            }
+          }
+        }
+        // Load one tile of B into local memory.
+        {
+#pragma unroll 4
+          for (int_tp lb = 0; lb < LPTB; ++lb) {
+            int_tp tid = tidm * RTSN + tidn;
+            int_tp id = lb * RTSN * RTSM + tid;
+            int_tp col = id % TSN;
+            int_tp row = id / TSN;
+            int_tp tiledIndex = TSK * t + row;
+            if ((offN + col) < N && tiledIndex < K) {
+              int_tp d_iter_0;
+              int_tp d_temp_0;
+              int_tp d_iter_1;
+              int_tp d_temp_1;
+              int_tp imageIndex = offN + col;
+              // Compute d_iter, final tiledIndex becomes input feature map ID.
+              // Scale d_iter by the dilation factor.
+              d_iter_1 = (tiledIndex % v_k_1) * v_d_1;
+              tiledIndex = tiledIndex / v_k_1;
+              // Compute d_temp.
+              // Scale d_temp by the stride and subtract the padding.
+              d_temp_1 = (imageIndex % v_imso_1) * v_s_1 - v_p_1;
+              imageIndex = imageIndex / v_imso_1;
+              // Compute d_iter, final tiledIndex becomes input feature map ID.
+              // Scale d_iter by the dilation factor.
+              d_iter_0 = (tiledIndex % v_k_0) * v_d_0;
+              tiledIndex = tiledIndex / v_k_0;
+              // Compute d_temp.
+              // Scale d_temp by the stride and subtract the padding.
+              d_temp_0 = (imageIndex % v_imso_0) * v_s_0 - v_p_0;
+              imageIndex = imageIndex / v_imso_0;
+              // Recombine final index, compute in-range.
+              bool skip_range_check = false;
+              // Used only if padding is not 0.
+              bool in_range = skip_range_check;
+              int_tp d_iter_im;
+              // Here, d_temp_ represents the column shift,
+              // while d_iter_ is the kernel shift.
+              d_iter_im = d_temp_0 + d_iter_0;
+              tiledIndex = tiledIndex * v_imsi_0 + d_iter_im;
+              if (!skip_range_check) {
+                in_range &= d_iter_im >= 0 && d_iter_im < v_imsi_0;
+              }
+              // Here, d_temp_ represents the column shift,
+              // while d_iter_ is the kernel shift.
+              d_iter_im = d_temp_1 + d_iter_1;
+              tiledIndex = tiledIndex * v_imsi_1 + d_iter_im;
+              if (!skip_range_check) {
+                in_range &= d_iter_im >= 0 && d_iter_im < v_imsi_1;
+              }
+              if (in_range) {
+                // tiledIndex now holds the memory offset for the input image.
+                Bsub[row][col] = Bptr[tiledIndex];
+              } else {
+                Bsub[row][col] = 0.0;
+              }
+            } else {
+              Bsub[row][col] = 0.0;
+            }
+          }
+        }
+        // Synchronize to make sure the tile is loaded.
+        barrier(CLK_LOCAL_MEM_FENCE);
+        // Temporary registers for A and B.
+        Dtype4 Areg;
+        Dtype4 Breg[WPTN / VWN];
+// Loop over the values of a single tile.
+#pragma unroll 1
+        for (int_tp kt = 0; kt < TSK; kt += TSK_UNROLL) {
+#pragma unroll 1
+          for (int_tp ku = 0; ku < TSK_UNROLL; ++ku) {
+            int_tp k = kt + ku;
+// Cache the values of Bsub in registers.
+#pragma unroll
+            for (int_tp wn = 0; wn < WPTN / VWN; ++wn) {
+              int_tp col = tidn + wn * VWN * RTSN;
+              VEC_4_0(Breg[wn]) = Bsub[k][col + 0];
+              VEC_4_1(Breg[wn]) = Bsub[k][col + 16];
+              VEC_4_2(Breg[wn]) = Bsub[k][col + 32];
+              VEC_4_3(Breg[wn]) = Bsub[k][col + 48];
+            }
+// Perform the computation.
+#pragma unroll
+            for (int_tp wm = 0; wm < WPTM / VWM; ++wm) {
+              int_tp row = tidm + wm * VWM * RTSM;
+              VEC_4_0(Areg) = Asub[row + 0][k];
+              VEC_4_1(Areg) = Asub[row + 16][k];
+              VEC_4_2(Areg) = Asub[row + 32][k];
+              VEC_4_3(Areg) = Asub[row + 48][k];
+#pragma unroll
+              for (int_tp wn = 0; wn < WPTN / VWN; ++wn) {
+                VEC_4_0(Creg[wm * VWM + 0][wn]) +=
+                    VEC_4_0(Areg) * VEC_4_0(Breg[wn]);
+                VEC_4_0(Creg[wm * VWM + 1][wn]) +=
+                    VEC_4_1(Areg) * VEC_4_0(Breg[wn]);
+                VEC_4_0(Creg[wm * VWM + 2][wn]) +=
+                    VEC_4_2(Areg) * VEC_4_0(Breg[wn]);
+                VEC_4_0(Creg[wm * VWM + 3][wn]) +=
+                    VEC_4_3(Areg) * VEC_4_0(Breg[wn]);
+                VEC_4_1(Creg[wm * VWM + 0][wn]) +=
+                    VEC_4_0(Areg) * VEC_4_1(Breg[wn]);
+                VEC_4_1(Creg[wm * VWM + 1][wn]) +=
+                    VEC_4_1(Areg) * VEC_4_1(Breg[wn]);
+                VEC_4_1(Creg[wm * VWM + 2][wn]) +=
+                    VEC_4_2(Areg) * VEC_4_1(Breg[wn]);
+                VEC_4_1(Creg[wm * VWM + 3][wn]) +=
+                    VEC_4_3(Areg) * VEC_4_1(Breg[wn]);
+                VEC_4_2(Creg[wm * VWM + 0][wn]) +=
+                    VEC_4_0(Areg) * VEC_4_2(Breg[wn]);
+                VEC_4_2(Creg[wm * VWM + 1][wn]) +=
+                    VEC_4_1(Areg) * VEC_4_2(Breg[wn]);
+                VEC_4_2(Creg[wm * VWM + 2][wn]) +=
+                    VEC_4_2(Areg) * VEC_4_2(Breg[wn]);
+                VEC_4_2(Creg[wm * VWM + 3][wn]) +=
+                    VEC_4_3(Areg) * VEC_4_2(Breg[wn]);
+                VEC_4_3(Creg[wm * VWM + 0][wn]) +=
+                    VEC_4_0(Areg) * VEC_4_3(Breg[wn]);
+                VEC_4_3(Creg[wm * VWM + 1][wn]) +=
+                    VEC_4_1(Areg) * VEC_4_3(Breg[wn]);
+                VEC_4_3(Creg[wm * VWM + 2][wn]) +=
+                    VEC_4_2(Areg) * VEC_4_3(Breg[wn]);
+                VEC_4_3(Creg[wm * VWM + 3][wn]) +=
+                    VEC_4_3(Areg) * VEC_4_3(Breg[wn]);
+              }
+            }
+          }
+        }
+
+        // Synchronize before loading the next tile.
+        barrier(CLK_LOCAL_MEM_FENCE);
+      }
+    }
+// Store the final results in C.
+#pragma unroll
+    for (int_tp wm = 0; wm < WPTM; ++wm) {
+      int_tp globalRow = offM + tidm + wm * RTSM;
+      Dtype biasval = Dptr[globalRow];
+#pragma unroll
+      for (int_tp wn = 0; wn < WPTN; ++wn) {
+        int_tp globalCol = offN + tidn + wn * RTSN;
+        printf("l0=%d l1=%d g0=%d g1=%d Store out[%d][%d] = ", get_local_id(0),
+               get_local_id(1), get_global_id(0), get_global_id(1), globalRow,
+               globalCol);
+        if (globalRow < M && globalCol < N) {
+          printf("%f\n", ((Dtype *)(&(Creg[wm][wn / VWN])))[wn % VWN] +
+                             v_bmul * biasval);
+          Cptr[globalRow * N + globalCol] =
+              ((Dtype *)(&(Creg[wm][wn / VWN])))[wn % VWN] + v_bmul * biasval;
+        }
+      }
+    }
+  }
+}
+#endif
 
 static const char *SimpleConvKernel = R"(
 __kernel
@@ -829,8 +1148,75 @@ __kernel void null_kernel_float(unsigned p) {}
 __kernel void null_kernel_double(unsigned p) {}
 )";
 
+std::unordered_map<std::string, LibDNNConv<Dtype> *> convolutionKernels;
+
+template <typename Dtype>
+std::string getConvIdentifier(LibDNNConvConfig &config) {
+  std::stringstream ss;
+  ss << "CONV_";
+  if (std::is_same<Dtype, double>::value) {
+    ss << "double_";
+  } else {
+    ss << "float_";
+  }
+  // Device name
+  ss << config.dev_ptr->name();
+  ss << "_";
+  // spatial dims
+  ss << 2 << "D_";
+  ss << "IN[";
+  for (int_tp i = 0; i < config.in_shape.size(); ++i) {
+    ss << config.in_shape[i];
+    if (i < config.in_shape.size() - 1) {
+      ss << ",";
+    }
+  }
+  ss << "]_OUT[";
+  for (int_tp i = 0; i < config.out_shape.size(); ++i) {
+    ss << config.out_shape[i];
+    if (i < config.out_shape.size() - 1) {
+      ss << ",";
+    }
+  }
+  ss << "]_K[";
+  for (int_tp i = 0; i < config.kernel.size(); ++i) {
+    ss << config.kernel[i];
+    if (i < config.kernel.size() - 1) {
+      ss << ",";
+    }
+  }
+  ss << "]_S[";
+  for (int_tp i = 0; i < config.stride.size(); ++i) {
+    ss << config.stride[i];
+    if (i < config.stride.size() - 1) {
+      ss << ",";
+    }
+  }
+  ss << "]_P[";
+  for (int_tp i = 0; i < config.pad.size(); ++i) {
+    ss << config.pad[i];
+    if (i < config.pad.size() - 1) {
+      ss << ",";
+    }
+  }
+  ss << "]_D[";
+  for (int_tp i = 0; i < config.dilation.size(); ++i) {
+    ss << config.dilation[i];
+    if (i < config.dilation.size() - 1) {
+      ss << ",";
+    }
+  }
+  ss << "]_";
+  ss << "FIN[" << config.in_shape[1] << "]_";
+  ss << "FOUT[" << config.out_shape[1] << "]_";
+  ss << "G[" << config.group << "]";
+  return ss.str();
+}
+
 #if 1
 void OCLBackend::executeConvolution(OCLConvolutionInst *CC) {
+  // executeConvolutionAlt(CC);
+  // return;
   auto input = CC->getSrc();
   auto output = CC->getDest();
   auto bias = CC->getBias();
@@ -871,7 +1257,7 @@ void OCLBackend::executeConvolution(OCLConvolutionInst *CC) {
                                    static_cast<int_tp>(CC->getPad())};
   config.stride = std::vector<int_tp>{static_cast<int_tp>(CC->getStride()),
                                       static_cast<int_tp>(CC->getStride())};
-  config.dilation = std::vector<int_tp>{0, 0};
+  config.dilation = std::vector<int_tp>{1, 1};
   config.group = 1;
   config.bias_term = true;
   config.fast_unsafe_math = true;
@@ -900,8 +1286,17 @@ void OCLBackend::executeConvolution(OCLConvolutionInst *CC) {
                      << " , " << idim.h << " , " << idim.c << "\n";
         llvm::dbgs() << "Dest dims (n, w, h, c): " << odim.n << " , " << odim.w
                      << " , " << odim.h << " , " << odim.c << "\n");
-  // Create an optimized convolution kernel.
-  LibDNNConv<Dtype> *libdnn = new LibDNNConv<Dtype>(config);
+  auto id = getConvIdentifier<Dtype>(config);
+  LibDNNConv<Dtype> *libdnn{nullptr};
+  if (convolutionKernels.count(id)) {
+    DEBUG(llvm::dbgs() << "Reuse existing kernel: " << id << "\n");
+    libdnn = convolutionKernels[id];
+  } else {
+    // Create an optimized convolution kernel.
+    libdnn = new LibDNNConv<Dtype>(config);
+    // llvm::errs() << libdnn->getKernel() << "\n";
+    convolutionKernels[id] = libdnn;
+  }
   // llvm::errs() << libdnn->getKernel() << "\n";
   GLOW_ASSERT(tensors_.count(input));
   GLOW_ASSERT(tensors_.count(output));
@@ -911,47 +1306,50 @@ void OCLBackend::executeConvolution(OCLConvolutionInst *CC) {
   // libdnn->Forward((float *)inputBuf, (float *)weightsBuf, (float *)biasBuf,
   //                (float *)outputBuf, idim.n);
   libdnn->Forward((float *)deviceBuffer_, tensors_[input], tensors_[weights],
-                  tensors_[bias], tensors_[output], 1);
-#if 1
+                  tensors_[bias], tensors_[output], idim.n);
+#if 0
   // Check only if it is a simple kernel of size 1 and stride 1.
   if (CC->getKernel() > 1) {
-  clFinish(commands_);
-  llvm::errs() << "Checking OpenCL convolution for correctness\n";
-  float *outNew = (float *)alignedAlloc(output->getType()->getSizeInBytes(),
-                                        TensorAlignment);
-  float *outOld = (float *)alignedAlloc(output->getType()->getSizeInBytes(),
-                                        TensorAlignment);
-  // Copy output into a temporary host buffer.
-  copyValueFromDevice(output, outNew);
-  clFinish(commands_);
+    llvm::errs() << libdnn->getKernel() << "\n";
+    clFinish(commands_);
+    llvm::errs() << "Checking OpenCL convolution for correctness\n";
+    float *outNew = (float *)alignedAlloc(output->getType()->getSizeInBytes(),
+                                          TensorAlignment);
+    float *outOld = (float *)alignedAlloc(output->getType()->getSizeInBytes(),
+                                          TensorAlignment);
+    // Copy output into a temporary host buffer.
+    copyValueFromDevice(output, outNew);
+    clFinish(commands_);
 
-  // Run the naive kernel
-  executeConvolutionAlt(CC);
-  clFinish(commands_);
-  // Copy output into a temporary host buffer.
-  copyValueFromDevice(output, outOld);
-  clFinish(commands_);
+    // Run the naive kernel
+    executeConvolutionAlt(CC);
+    clFinish(commands_);
+    // Copy output into a temporary host buffer.
+    copyValueFromDevice(output, outOld);
+    clFinish(commands_);
 
-  Tensor oldT(outOld, output->getType()); 
-  Tensor newT(outNew, output->getType());
+    Tensor oldT(outOld, output->getType());
+    Tensor newT(outNew, output->getType());
 
-  auto oldH = oldT.getHandle<float>(); 
-  auto newH = newT.getHandle<float>(); 
+    auto oldH = oldT.getHandle<float>();
+    auto newH = newT.getHandle<float>();
 
-  // Compare buffers for equality.
-  //for (int idx = 0, e = output->getType()->size(); idx < e; ++idx) {
-  for (size_t n = 0, ne = 1; n < ne; ++n) {
-    for (size_t c = 0, ce = 3; c < ce; ++c) {
-      for (size_t h = 0, he = 3; h < he; ++h) {
-        for (size_t w = 0, we = 3; w < we; ++w) {
-    if (oldH.at({n, c, h, w}) != newH.at({n, c, h, w})) {
-      llvm::errs() << "Convolution results differ at index (" << n << ", " << c << ", " << h << ", " << w  << ") :"
-                   << "new = " << newH.at({n, c, h, w}) << " vs "
-                   << "old = " << oldH.at({n, c, h, w}) << "\n";
-    }
+    // Compare buffers for equality.
+    // for (int idx = 0, e = output->getType()->size(); idx < e; ++idx) {
+    newH.dump();
+    for (size_t n = 0, ne = 1; n < ne; ++n) {
+      for (size_t c = 0, ce = 3; c < ce; ++c) {
+        for (size_t h = 0, he = 3; h < he; ++h) {
+          for (size_t w = 0, we = 3; w < we; ++w) {
+            if (oldH.at({n, c, h, w}) != newH.at({n, c, h, w})) {
+              llvm::errs() << "Convolution results differ at index (" << n
+                           << ", " << c << ", " << h << ", " << w << ") :"
+                           << "new = " << newH.at({n, c, h, w}) << " vs "
+                           << "old = " << oldH.at({n, c, h, w}) << "\n";
+            }
+          }
         }
       }
-    }
   }
   alignedFree(outNew);
   alignedFree(outOld);
