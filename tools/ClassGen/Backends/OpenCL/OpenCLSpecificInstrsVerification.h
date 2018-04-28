@@ -1,3 +1,3 @@
-#ifdef GLOW_WITH_CPU
+#ifdef GLOW_WITH_OPENCL
 
-#endif // GLOW_WITH_CPU
+#endif // GLOW_WITH_OPENCL

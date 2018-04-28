@@ -1,4 +1,4 @@
-#ifdef GLOW_WITH_CPU
+#ifdef GLOW_WITH_OPENCL
 
 void OCLConvolutionNode::verify() const {
   ShapeNCHW idim(getInput().getType()->dims());
@@ -10,4 +10,7 @@ void OCLConvolutionNode::verify() const {
   assert(exp == odim && "Invalid output dimensions");
 }
 
-#endif // GLOW_WITH_CPU
+void OCLPoolAvgNode::verify() const {}
+
+void OCLPoolMaxNode::verify() const {}
+#endif // GLOW_WITH_OPENCL
