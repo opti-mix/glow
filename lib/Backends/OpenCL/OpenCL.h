@@ -31,10 +31,18 @@
 #include <CL/cl.hpp>
 #endif
 
+#define WITH_LIBDNN
+
+#if defined(WITH_LIBDNN)
+//#include "device.hpp"
+#include "libdnn.hpp"
+#endif
+
 namespace glow {
 class IRFunction;
 class Backend;
 class ConvolutionInst;
+class ConvolutionGradInst;
 class OCLConvolutionInst;
 
 /// A helper struct with information about kernels launches.
@@ -95,6 +103,11 @@ class OCLBackend final : public Backend {
   size_t requiredSpace_;
   std::vector<KernelLaunch> kernelLaunches_;
 
+#if defined(WITH_LIBDNN)
+  greentea::device *devPtr_{nullptr};
+  std::vector<cl_device_id> ocl_devices_;
+#endif
+
 public:
   /// Ctor.
   explicit OCLBackend(IRFunction *M);
@@ -110,7 +123,7 @@ public:
 
   void doForwardPass() override;
 
-  bool transformPostLowering(Function *F) override;
+  bool transformPostLowering(Function *F, CompilationMode mode) override;
 
   bool isOpSupported(Kinded::Kind opKind, ElemKind elementTy) const override {
     if (elementTy == ElemKind::Int8QTy) {
@@ -124,19 +137,30 @@ public:
 private:
   /// Copies the value from a device to a provided buffer.
   /// If \p buf is nullptr, the payload of the underlying tensor is used.
-  void copyValueFromDevice(const Value *v, void *buf = nullptr);
+  /// \returns number of copied bytes.
+  size_t copyValueFromDevice(const Value *v, void *buf = nullptr);
   /// Copies value from the provided buffer to the device.
   /// If \p buf is nullptr, the payload of the underlying tensor is used.
-  void copyValueToDevice(const Value *v, void *buf = nullptr);
-  void copyMutableWeightsToDevice();
-  void copyConstantWeightsToDevice();
+  /// \returns number of copied bytes.
+  size_t copyValueToDevice(const Value *v, void *buf = nullptr);
+  /// \returns number of copied bytes.
+  size_t copyMutableWeightsToDevice();
+  /// \returns number of copied bytes.
+  size_t copyConstantWeightsToDevice();
 
-  void copyMutableWeightsFromDevice();
+  size_t copyMutableWeightsFromDevice();
+
+  /// Fill the device \p buffer with a given \p value.
+  /// \param len number of buffer elements to be filled by the \p value.
+  /// Elements are considered to be of the type described by \p elemKind.
+  void fillBuffer(cl_mem buffer, size_t start, size_t len, float value,
+                  ElemKind elemKind);
 
   void executeConvolution(ConvolutionInst *CC);
   void executeConvolution(OCLConvolutionInst *CC);
   /// For debugging only.
   void executeConvolutionAlt(OCLConvolutionInst *CC);
+  void executeConvolutionGrad(ConvolutionGradInst *CC);
 
   cl_mem allocDeviceBuffer(size_t size);
   void freeDeviceBuffer(cl_mem buf);

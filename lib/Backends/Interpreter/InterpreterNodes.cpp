@@ -1400,6 +1400,7 @@ void Interpreter::fwdDebugPrintInst(const DebugPrintInst *I) {
   llvm::outs() << "\n";
   dumpImpl(getTensor(V));
   llvm::outs() << "\n";
+  llvm::outs().flush();
 }
 
 //===----------------------------------------------------------------------===//

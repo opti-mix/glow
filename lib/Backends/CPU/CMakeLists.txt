@@ -45,6 +45,19 @@ add_library(CPURuntimeNative
               libjit/libjit_conv.cpp
               libjit/libjit_matmul.cpp)
 
+target_include_directories(CPURuntimeNative 
+                           PUBLIC
+                           ~/src/Halide/src/runtime
+                           ~/src/Halide/src
+                           )
+target_link_libraries(CPURuntimeNative
+                      PUBLIC
+                        /Users/rlevenstein/src/build/Halide/genfiles/halide_rt_host/halide_rt_host.a
+                        /Users/rlevenstein/src/build/Halide/genfiles/halide_sgemm_transAB/halide_sgemm_transAB.a
+                        /Users/rlevenstein/src/build/Halide/genfiles/halide_sgemm_notrans/halide_sgemm_notrans.a
+                        /Users/rlevenstein/src/build/Halide/genfiles/halide_simple_sgemm/halide_simple_sgemm.a
+                        )
+
 add_library(CPUBackend
             AllocationsInfo.cpp
             DebugInfo.cpp

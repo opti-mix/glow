@@ -1215,26 +1215,24 @@ std::string getConvIdentifier(LibDNNConvConfig &config) {
 
 #if 1
 void OCLBackend::executeConvolution(OCLConvolutionInst *CC) {
-  // executeConvolutionAlt(CC);
-  // return;
+  executeConvolutionAlt(CC);
+  return;
   auto input = CC->getSrc();
   auto output = CC->getDest();
   auto bias = CC->getBias();
   auto weights = CC->getFilter();
 #if 1
-  static greentea::device *devPtr{nullptr};
-  static std::vector<cl_device_id> ocl_devices;
-  if (!devPtr) {
+  if (!devPtr_) {
     int ctx_id = 0;
     int device = device_;
     greentea::device::setupViennaCLContext(ctx_id, context_, deviceId_,
                                            commands_);
-    ocl_devices.push_back(deviceId_);
-    viennacl::ocl::setup_context(ctx_id, ocl_devices);
-    devPtr = new greentea::device(ctx_id, device, /* list_id, */
-                                  greentea::Backend::BACKEND_OpenCL);
+    ocl_devices_.push_back(deviceId_);
+    viennacl::ocl::setup_context(ctx_id, ocl_devices_);
+    devPtr_ = new greentea::device(ctx_id, device, /* list_id, */
+                                   greentea::Backend::BACKEND_OpenCL);
     // Init is necessary to initialize the workgroup sizes properly.
-    devPtr->Init();
+    devPtr_->Init();
     viennacl::ocl::context &ctx = viennacl::ocl::get_context(ctx_id);
 
     std::vector<size_t> temp(3);
@@ -1244,7 +1242,7 @@ void OCLBackend::executeConvolution(OCLConvolutionInst *CC) {
                  << temp[2] << "\n";
   }
   LibDNNConvConfig config;
-  config.dev_ptr = devPtr;
+  config.dev_ptr = devPtr_;
   // NCHW is the expected format of input and output.
   config.in_shape =
       std::vector<int_tp>(input->dims().begin(), input->dims().end());
@@ -1261,8 +1259,8 @@ void OCLBackend::executeConvolution(OCLConvolutionInst *CC) {
   config.group = 1;
   config.bias_term = true;
   config.fast_unsafe_math = true;
-  config.weights_backward = false;
-  config.bias_backward = false;
+  config.weights_backward = true;
+  config.bias_backward = true;
 
   // if (std::is_same<Dtype, float>::value ||
   //  this->device_->CheckCapability("cl_khr_int64_base_atomics")) {
@@ -1371,3 +1369,165 @@ void OCLBackend::executeConvolution(OCLConvolutionInst *CC) {
 #else
 #endif
 #endif
+
+void OCLBackend::executeConvolutionGrad(ConvolutionGradInst *CC) {
+  // executeConvolutionAlt(CC);
+  // return;
+  auto input = CC->getSrc();
+  auto output = CC->getSrcGrad();
+  auto bias = CC->getBiasGrad();
+  auto weights = CC->getFilterGrad();
+#if 1
+  if (!devPtr_) {
+    int ctx_id = 0;
+    int device = device_;
+    greentea::device::setupViennaCLContext(ctx_id, context_, deviceId_,
+                                           commands_);
+    ocl_devices_.push_back(deviceId_);
+    viennacl::ocl::setup_context(ctx_id, ocl_devices_);
+    devPtr_ = new greentea::device(ctx_id, device, /* list_id, */
+                                   greentea::Backend::BACKEND_OpenCL);
+    // Init is necessary to initialize the workgroup sizes properly.
+    devPtr_->Init();
+    viennacl::ocl::context &ctx = viennacl::ocl::get_context(ctx_id);
+
+    std::vector<size_t> temp(3);
+    clGetDeviceInfo(ctx.devices()[0].id(), CL_DEVICE_MAX_WORK_ITEM_SIZES,
+                    3 * sizeof(size_t), &temp[0], NULL);
+    llvm::errs() << "WG sizes: " << temp[0] << ", " << temp[1] << ", "
+                 << temp[2] << "\n";
+  }
+  LibDNNConvConfig config;
+  config.dev_ptr = devPtr_;
+  // NCHW is the expected format of input and output.
+  config.in_shape =
+      std::vector<int_tp>(input->dims().begin(), input->dims().end());
+  config.out_shape =
+      std::vector<int_tp>(output->dims().begin(), output->dims().end());
+  // The expected format for kernel, pad and stride is HxW.
+  config.kernel = std::vector<int_tp>{static_cast<int_tp>(CC->getKernel()),
+                                      static_cast<int_tp>(CC->getKernel())};
+  config.pad = std::vector<int_tp>{static_cast<int_tp>(CC->getPad()),
+                                   static_cast<int_tp>(CC->getPad())};
+  config.stride = std::vector<int_tp>{static_cast<int_tp>(CC->getStride()),
+                                      static_cast<int_tp>(CC->getStride())};
+  config.dilation = std::vector<int_tp>{1, 1};
+  config.group = 1;
+  config.bias_term = true;
+  config.fast_unsafe_math = true;
+  config.weights_backward = true;
+  config.bias_backward = true;
+
+  // if (std::is_same<Dtype, float>::value ||
+  //  this->device_->CheckCapability("cl_khr_int64_base_atomics")) {
+  //  config.wgalgo = LIBDNN_CONVOLUTION_WG_ALGO_ATOMIC;
+  //  config.bwalgo = LIBDNN_CONVOLUTION_BW_ALGO_COL2IM_ATOMIC;
+  //} else {
+  config.wgalgo = LIBDNN_CONVOLUTION_WG_ALGO_DIRECT;
+  //  config.bwalgo = LIBDNN_CONVOLUTION_BW_ALGO_IM2COL;
+  //}
+  //
+
+  auto odim = ShapeNCHW(CC->getDestGrad()->getType()->dims());
+  auto idim = ShapeNCHW(CC->getSrc()->getType()->dims());
+  auto filterDim = ShapeNCHW(CC->getFilter()->getType()->dims());
+  DEBUG(llvm::dbgs() << "\n\nKernel (k, s, p): " << CC->getKernel() << " , "
+                     << CC->getStride() << " , " << CC->getPad() << "\n";
+        llvm::dbgs() << "Filter dims (n, w, h, c): " << filterDim.n << " , "
+                     << filterDim.w << " , " << filterDim.h << " , "
+                     << filterDim.c << "\n";
+        llvm::dbgs() << "Src dims (n, w, h, c): " << idim.n << " , " << idim.w
+                     << " , " << idim.h << " , " << idim.c << "\n";
+        llvm::dbgs() << "Dest dims (n, w, h, c): " << odim.n << " , " << odim.w
+                     << " , " << odim.h << " , " << odim.c << "\n");
+  auto id = getConvIdentifier<Dtype>(config);
+  LibDNNConv<Dtype> *libdnn{nullptr};
+  if (convolutionKernels.count(id)) {
+    DEBUG(llvm::dbgs() << "Reuse existing kernel: " << id << "\n");
+    libdnn = convolutionKernels[id];
+  } else {
+    // Create an optimized convolution kernel.
+    libdnn = new LibDNNConv<Dtype>(config);
+    // llvm::errs() << libdnn->getKernel() << "\n";
+    convolutionKernels[id] = libdnn;
+  }
+  // llvm::errs() << libdnn->getKernel() << "\n";
+  GLOW_ASSERT(tensors_.count(input));
+  GLOW_ASSERT(tensors_.count(output));
+  GLOW_ASSERT(tensors_.count(bias));
+  GLOW_ASSERT(tensors_.count(weights));
+  // Run it.
+  // libdnn->Forward((float *)inputBuf, (float *)weightsBuf, (float *)biasBuf,
+  //                (float *)outputBuf, idim.n);
+  // libdnn->Forward((float *)deviceBuffer_, tensors_[input], tensors_[weights],
+  //                tensors_[bias], tensors_[output], idim.n);
+  libdnn->Backward(/* prop_down_data */ true, /* prop_down_weights */ true,
+                   (float *)deviceBuffer_,
+                   tensors_[CC->getDestGrad()], tensors_[CC->getDestGrad()],
+                   // tensors_[CC->getSrc()], tensors_[CC->getSrcGrad()],
+                   tensors_[CC->getFilter()], tensors_[CC->getFilterGrad()],
+                   tensors_[CC->getBiasGrad()], tensors_[CC->getBiasGrad()],
+                   tensors_[CC->getSrc()], tensors_[CC->getSrcGrad()],
+                   // tensors_[CC->getDestGrad()], tensors_[CC->getDestGrad()],
+                   idim.n);
+#if 0
+  // Check only if it is a simple kernel of size 1 and stride 1.
+  if (CC->getKernel() == 1) {
+    llvm::errs() << libdnn->getKernel() << "\n";
+    clFinish(commands_);
+    llvm::errs() << "Checking OpenCL convolution for correctness\n";
+    float *outNew = (float *)alignedAlloc(output->getType()->getSizeInBytes(),
+                                          TensorAlignment);
+    float *outOld = (float *)alignedAlloc(output->getType()->getSizeInBytes(),
+                                          TensorAlignment);
+    // Copy output into a temporary host buffer.
+    copyValueFromDevice(output, outNew);
+    clFinish(commands_);
+
+    // Run the naive kernel
+    executeConvolutionAlt(CC);
+    clFinish(commands_);
+    // Copy output into a temporary host buffer.
+    copyValueFromDevice(output, outOld);
+    clFinish(commands_);
+
+    Tensor oldT(outOld, output->getType());
+    Tensor newT(outNew, output->getType());
+
+    auto oldH = oldT.getHandle<float>();
+    auto newH = newT.getHandle<float>();
+
+    // Compare buffers for equality.
+    // for (int idx = 0, e = output->getType()->size(); idx < e; ++idx) {
+    newH.dump();
+    for (size_t n = 0, ne = 1; n < ne; ++n) {
+      for (size_t c = 0, ce = 3; c < ce; ++c) {
+        for (size_t h = 0, he = 3; h < he; ++h) {
+          for (size_t w = 0, we = 3; w < we; ++w) {
+            if (oldH.at({n, c, h, w}) != newH.at({n, c, h, w})) {
+              llvm::errs() << "Convolution results differ at index (" << n
+                           << ", " << c << ", " << h << ", " << w << ") :"
+                           << "new = " << newH.at({n, c, h, w}) << " vs "
+                           << "old = " << oldH.at({n, c, h, w}) << "\n";
+            }
+          }
+        }
+      }
+  }
+  alignedFree(outNew);
+  alignedFree(outOld);
+  }
+#endif
+#else
+  auto prog = createProgram(ConvKernel, {}, commands_);
+  auto kernel = createKernel("conv_forward_mem", prog);
+  setKernelArg(kernel, 0, deviceBuffer_);
+  setKernelArg<cl_uint>(kernel, 1, tensors_[input]);
+  setKernelArg<cl_uint>(kernel, 2, tensors_[weights]);
+  setKernelArg<cl_uint>(kernel, 3, tensors_[bias]);
+  setKernelArg<cl_uint>(kernel, 4, tensors_[output]);
+  // setKernelLocalArg(kernel, 5, 4*8*sizeof(float));
+  // setKernelLocalArg(kernel, 6, 4*8*sizeof(float));
+  enqueueKernel(commands_, kernel, deviceId_, {1, 1, 1}, kernelLaunches_);
+#endif
+}

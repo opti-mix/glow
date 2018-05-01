@@ -5,8 +5,8 @@ add_library(OpenCL
 
 target_include_directories(OpenCL
                            PUBLIC
-                           /Users/rlevenstein/src/libdnn/include
-                           /Users/rlevenstein/src/libdnn/build
+                           /Users/rlevenstein/src/libdnn.romix/include
+                           /Users/rlevenstein/src/libdnn.romix/build
                            )
 
 target_link_libraries(OpenCL
@@ -21,5 +21,5 @@ target_link_libraries(OpenCL
                       OpenCL::OpenCL
                       CLBlast
                       # Use libdnn.
-                      /Users/rlevenstein/src/libdnn/build/src/libgreentea_libdnn.dylib
+                      /Users/rlevenstein/src/libdnn.romix/build/src/libgreentea_libdnn.dylib
                       )

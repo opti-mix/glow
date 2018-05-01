@@ -63,8 +63,8 @@ static Node *optimizeOCLPoolMax(PoolMaxNode *PMN, Function *F) {
 
 bool OCLBackend::transformPostLowering(Function *F, CompilationMode mode) {
   bool changed = false;
-  if (mode == CompilationMode::Train)
-    return false;
+  //if (mode == CompilationMode::Train)
+  //  return false;
   for (auto node : F->getNodes()) {
     if (auto *CN = dyn_cast<ConvolutionNode>(node)) {
       if (Node *NCN = optimizeOCLConv(CN, F)) {

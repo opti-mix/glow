@@ -318,16 +318,18 @@ static void sinkCode(Function *F) {
         // If one of the sides is a splat, it can be seen as
         // transpose (splat').
         if (isa<SplatNode>(GET_LHS(node)) && RTR) {
+          // Build splat' for LHS.
           auto *SN = dyn_cast<SplatNode>(GET_LHS(node));
           auto *NS = F->createSplat("splat", RTR->getInput().getType(),
                                     SN->getValue());
           LTR = F->createTranspose("transpose", NS, RTR->getShuffle());
           Changed = true;
         } else if (isa<SplatNode>(GET_RHS(node)) && LTR) {
+          // Build splat' for RHS.
           auto *SN = dyn_cast<SplatNode>(GET_RHS(node));
           auto *NS = F->createSplat("splat", LTR->getInput().getType(),
                                     SN->getValue());
-          LTR = F->createTranspose("transpose", NS, LTR->getShuffle());
+          RTR = F->createTranspose("transpose", NS, LTR->getShuffle());
           Changed = true;
         } else {
           continue;
@@ -642,8 +644,9 @@ static void optimizeTranspose(Function *F) {
       continue;
     }
     // Create a new variable NV to hold the transposed result.
-    auto *NV = F->getParent()->createVariable(
-        TN->getType(), V->getName(), V->getVisibilityKind(), V->getTrainKind());
+    auto *NV = F->getParent()->createVariable(TN->getType(), V->getName(),
+                                              V->getVisibilityKind(),
+                                              Variable::TrainKind::None);
     // Transpose the value of V into NV.
     genericTranspose(&V->getPayload(), &NV->getPayload(), TN->getShuffle());
     // Rewrite uses of TN to reference NV.

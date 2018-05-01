@@ -162,6 +162,7 @@ public:
       // Find the original pool instruction.
       assert(nodeToInstr_.count(poolOut) &&
              "Pool IRgen did not register itself");
+      // Assumes that the original node was lowered to PoolMaxWithXYInst instruction.
       auto *PI = cast<PoolMaxWithXYInst>(nodeToInstr_[poolOut.getNode()]);
 
       builder_.createPoolMaxWithXYGradInst(N->getName(), outW, PI->getSrcXY(),

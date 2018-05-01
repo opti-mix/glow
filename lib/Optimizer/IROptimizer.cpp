@@ -1130,7 +1130,7 @@ static void eliminateDeadStores(IRFunction &M) {
 static void performDebugInstrumentation(IRFunction &M) {
   if (!instrumentDebug)
     return;
-
+  M.dump();
   auto &instrs = M.getInstrs();
   for (auto it = instrs.begin(), e = instrs.end(); it != e;) {
     auto next = std::next(it);
@@ -1147,6 +1147,8 @@ static void performDebugInstrumentation(IRFunction &M) {
         name += Op.first->getName();
         name += ".";
         name += instrName;
+        name += ".";
+        name += (*it)->getKindName();
         auto *dumpInstr = new DebugPrintInst(&M, name, Op.first);
         M.insertInstruction(it, dumpInstr);
       }
@@ -1157,6 +1159,8 @@ static void performDebugInstrumentation(IRFunction &M) {
         name += Op.first->getName();
         name += ".";
         name += instrName;
+        name += ".";
+        name += (*it)->getKindName();
         auto *dumpInstr = new DebugPrintInst(&M, name, Op.first);
         M.insertInstruction(next, dumpInstr);
       }
