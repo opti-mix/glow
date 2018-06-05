@@ -151,6 +151,30 @@ class FunctionSpecializer {
     return specializedF;
   }
 
+  /// \returns true if a function is eligable for specialization.
+  bool isEligableForSpecialization(const llvm::CallInst *call) {
+    // For now, specialize all functions invoked from "main". In the future, we
+    // may introduce more complex logic for making this decision. It could be
+    // based in the number of invocations of a function, number of its
+    // arguments, its code size, etc.
+    const auto *caller = call->getFunction();
+    const auto *callee = call->getCalledFunction();
+    // Specialized only calls inside main.
+    // assert(caller == entryF_ &&
+    //       "Only calls inside the entry function are specialized");
+    (void)caller;
+    // Do not specialize any LLVM internal functions.
+    if (callee && callee->getName().startswith("llvm."))
+      return false;
+    // Do not specialize noinline functions, because it does not improve
+    // anything.
+    return callee != nullptr &&
+           !callee->hasFnAttribute(llvm::Attribute::AttrKind::NoInline);
+  }
+
+public:
+  FunctionSpecializer(llvm::ArrayRef<llvm::Function *> funcs) : funcs_(funcs) {}
+
   /// Specialize a single call.
   /// \returns true if it was possible to specialize the call.
   llvm::CallInst *specializeCall(llvm::CallInst *call) {
@@ -176,6 +200,14 @@ class FunctionSpecializer {
         argsForSpecialized.push_back(arg);
         continue;
       }
+      // Do not specialize the offset arguments of insert_tensor operations.
+      if (callee->getName().startswith("libjit_insert_tensor") ||
+          callee->getName().startswith("libjit_extract_tensor")) {
+        if (curArgIdx == 2) {
+          argsForSpecialized.push_back(arg);
+          continue;
+        }
+      }
 
       argsToBeSpecialized |= (((uint64_t)1) << curArgIdx);
 
@@ -195,29 +227,6 @@ class FunctionSpecializer {
     return createCall(builder, specializedF, argsForSpecialized);
   }
 
-  /// \returns true if a function is eligable for specialization.
-  bool isEligableForSpecialization(const llvm::CallInst *call) {
-    // For now, specialize all functions invoked from "main". In the future, we
-    // may introduce more complex logic for making this decision. It could be
-    // based in the number of invocations of a function, number of its
-    // arguments, its code size, etc.
-    const auto *caller = call->getFunction();
-    const auto *callee = call->getCalledFunction();
-    // Specialized only calls inside main.
-    assert(caller == entryF_ &&
-           "Only calls inside the entry function are specialized");
-    (void)caller;
-    // Do not specialize any LLVM internal functions.
-    if (callee && callee->getName().startswith("llvm."))
-      return false;
-    // Do not specialize noinline functions, because it does not improve
-    // anything.
-    return callee != nullptr &&
-           !callee->hasFnAttribute(llvm::Attribute::AttrKind::NoInline);
-  }
-
-public:
-  FunctionSpecializer(llvm::Function *entryF) : entryF_(entryF) {}
   void run() {
     // Bail if there is nothing to be specialized.
     if (!jitSpecializeDims && !jitSpecializeAllArguments_)
@@ -226,23 +235,24 @@ public:
     // The removal should happen after all specializations are done, because
     // these call instructions are used by the keys in Specializations_ map.
     llvm::SmallVector<llvm::Instruction *, 32> erasedInstructions;
-    auto *F = entryF_;
-    // Collect all eligable calls in the current function.
-    llvm::SmallVector<llvm::CallInst *, 64> calls;
-    for (auto &BB : *F) {
-      for (auto &I : BB) {
-        auto *CI = dyn_cast<llvm::CallInst>(&I);
-        if (!CI)
-          continue;
-        if (!isEligableForSpecialization(CI))
-          continue;
-        calls.push_back(CI);
+    for (auto *F : funcs_) {
+      // Collect all eligable calls in the current function.
+      llvm::SmallVector<llvm::CallInst *, 64> calls;
+      for (auto &BB : *F) {
+        for (auto &I : BB) {
+          auto *CI = dyn_cast<llvm::CallInst>(&I);
+          if (!CI)
+            continue;
+          if (!isEligableForSpecialization(CI))
+            continue;
+          calls.push_back(CI);
+        }
       }
-    }
-    // Try to specialize all the collected calls.
-    for (auto *call : calls) {
-      if (specializeCall(call))
-        erasedInstructions.push_back(call);
+      // Try to specialize all the collected calls.
+      for (auto *call : calls) {
+        if (specializeCall(call))
+          erasedInstructions.push_back(call);
+      }
     }
 
     // Remove those calls that were successfully replaced by calls of
@@ -316,8 +326,8 @@ private:
     }
   };
 
-  /// The entry function of the module.
-  llvm::Function *entryF_;
+  /// Functions to be analyzed.
+  llvm::ArrayRef<llvm::Function *> funcs_;
   /// Mapping from specialization keys to the specialized functions.
   std::unordered_map<SpecializationKey, llvm::Function *,
                      SpecializationKeyHasher, SpecializationKeyEq>
@@ -334,7 +344,15 @@ private:
 } // namespace
 
 void LLVMIRGen::performSpecialization() {
-  FunctionSpecializer FuncSpecializer(llmodule_->getFunction("main"));
+  // Specialize calls in all main functions.
+  llvm::SmallVector<llvm::Function *, 32> mainFunctions;
+  for (auto &F : getModule()) {
+    if (!F.getName().startswith("main")) {
+      continue;
+    }
+    mainFunctions.emplace_back(&F);
+  }
+  FunctionSpecializer FuncSpecializer(mainFunctions);
   FuncSpecializer.run();
   // Add debug info to all the newly created functions, i.e. to the created
   // specialized functions.

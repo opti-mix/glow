@@ -68,6 +68,10 @@ void LLVMIRGen::optimizeLLVMModule(llvm::Function *F, llvm::TargetMachine &TM) {
     // start with jit_
     if (name.empty() || name.startswith("libjit_"))
       return false;
+    // Do not preserve main functions that are called internally by the
+    // top-level main.
+    if (name.startswith("main."))
+      return false;
     return true;
   };
 
@@ -80,6 +84,24 @@ void LLVMIRGen::optimizeLLVMModule(llvm::Function *F, llvm::TargetMachine &TM) {
   // all functions.
   for (auto &FF : *M) {
     FF.removeFnAttr(llvm::Attribute::AttrKind::NoInline);
+  }
+
+  // Specialize all invocations of main functions with constant parameters to
+  // produce a better optimized code.
+  auto *func = getModule().getFunction("jitmain");
+  while (func) {
+    // Call of a "main" function is always the last instruction before return.
+    auto instrBeforeTerminator =
+        std::prev(func->back().getTerminator()->getIterator());
+    auto *call = dyn_cast<llvm::CallInst>(instrBeforeTerminator);
+    if (!call)
+      break;
+    // Specialize only calls of all "main" functions.
+    func = call->getCalledFunction();
+    if (!func || !func->getName().startswith("main"))
+      break;
+    call = specializeCallWithConstantArguments(call);
+    func = call ? call->getCalledFunction() : nullptr;
   }
 
   // Perform specialization of functions for constant arguments before anything
