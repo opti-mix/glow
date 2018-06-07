@@ -673,55 +673,62 @@ static bool isOverlappingWithAnyBundleBufferOperands(
   return false;
 }
 
+/// Split a big main LLVM function into pieces to avoid generating huge
+/// functions. This is done to keep all generated LLVM functions rather small to
+/// speed up the JIT compilation.
+/// The split is performed if the number of Glow IR instructions emitted into
+/// the current LLVM function gets above a certain threshold. In this case, a
+/// new LLVM function with the same signature as the current one is created.
+/// Then it is called and we pass the arguments of the current function down to
+/// the new one. The names of all functions split from "main" look like
+/// "main.0", "main.1", etc.
+void LLVMIRGen::splitBigMainFunctionIfNecessary(
+    llvm::IRBuilder<> &builder, size_t &numGlowInstrsInCurrentFn) {
+  // Max number of Glow IR instructions to be emitted into a single LLVM
+  // function.
+  constexpr size_t maxNumGlowInstrsPerFn = 500;
+  // Current LLVM function that should be used for emitting LLVM instructions.
+  llvm::Function *curFn = builder.GetInsertBlock()->getParent();
+
+  // Check if the current function is getting too big and needs to be cut into
+  // pieces.
+  if (numGlowInstrsInCurrentFn > maxNumGlowInstrsPerFn) {
+    auto int8PtrTy = llvm::Type::getInt8PtrTy(ctx_);
+    auto sizeTPtrTy = llvm::Type::getIntNPtrTy(ctx_, sizeof(size_t) * 8);
+    // Type of the return value.
+    llvm::Type *returnTy = llvm::Type::getVoidTy(ctx_);
+    // Types of parameters.
+    llvm::Type *paramTys[] = {int8PtrTy, int8PtrTy, int8PtrTy, sizeTPtrTy};
+    llvm::FunctionType *jitFuncTy =
+        llvm::FunctionType::get(returnTy, paramTys, /* isVarArg */ false);
+    // Create a new function and make it private.
+    auto *func = llvm::Function::Create(
+        jitFuncTy, llvm::Function::PrivateLinkage, "main", llmodule_.get());
+    // This function should not be inlined as it would lead to huge functions.
+    func->addFnAttr(llvm::Attribute::NoInline);
+    std::vector<llvm::Value *> args;
+    for (auto &arg : curFn->args()) {
+      args.emplace_back(&arg);
+    }
+    // Insert the call of the new function right before the return.
+    createCall(builder, func, args);
+    builder.CreateRetVoid();
+    // The new function becomes a current LLVM function.
+    curFn = func;
+    llvm::BasicBlock *entryBB = llvm::BasicBlock::Create(ctx_, "entry", curFn);
+    // LLVM code for the subsequent IR instructions should be emitted into the
+    // new function.
+    builder.SetInsertPoint(entryBB);
+    loadBaseAddresses(builder);
+    numGlowInstrsInCurrentFn = 0;
+  }
+}
+
 void LLVMIRGen::generateLLVMIRForModule(llvm::IRBuilder<> &builder) {
   // Go over the instructions and try to group them into bundles.
   auto &instrs = F_->getInstrs();
   // Number of IR instructions emitted into the current LLVM function.
   size_t numInstrsInCurrentFn = 0;
-  // Max number of IR instructions to be emitted into a single LLVM function.
-  constexpr size_t maxNumInstrsPerFn = 500;
-  // Current LLVM function that should be used for emitting LLVM instructions.
-  llvm::Function *curFn = builder.GetInsertBlock()->getParent();
-
-  // Create a new LLVM function with the same signature as the current one.
-  // Call this function and pass the arguments of the current function down to
-  // the new one.
-  // This is done to keep all generated LLVM functions rather small
-  // to speed up the JIT compilation.
-  auto createNewFnIfNecessary = [&]() {
-    // Check if the current function is getting too big and a new function needs
-    // to be created.
-    if (numInstrsInCurrentFn > maxNumInstrsPerFn) {
-      auto int8PtrTy = llvm::Type::getInt8PtrTy(ctx_);
-      auto sizeTPtrTy = llvm::Type::getIntNPtrTy(ctx_, sizeof(size_t) * 8);
-      // Type of the return value.
-      llvm::Type *returnTy = llvm::Type::getVoidTy(ctx_);
-      // Types of parameters.
-      llvm::Type *paramTys[] = {int8PtrTy, int8PtrTy, int8PtrTy, sizeTPtrTy};
-      llvm::FunctionType *jitFuncTy =
-          llvm::FunctionType::get(returnTy, paramTys, /* isVarArg */ false);
-      auto *func = llvm::Function::Create(
-          jitFuncTy, llvm::Function::ExternalLinkage, "main", llmodule_.get());
-      // This function should not be inlined as it would lead to huge functions.
-      func->addFnAttr(llvm::Attribute::NoInline);
-      std::vector<llvm::Value *> args;
-      for (auto &arg : curFn->args()) {
-        args.emplace_back(&arg);
-      }
-      // Insert the call of the new function right before the return.
-      createCall(builder, func, args);
-      builder.CreateRetVoid();
-      // The new function becomes a current LLVM function.
-      curFn = func;
-      llvm::BasicBlock *entryBB =
-          llvm::BasicBlock::Create(ctx_, "entry", curFn);
-      // LLVM code for the subsequent IR instructions should be emitted into the
-      // new function.
-      builder.SetInsertPoint(entryBB);
-      loadBaseAddresses(builder);
-      numInstrsInCurrentFn = 0;
-    }
-  };
 
   // Group instructions into bundles of shape compatible data parallel
   // instructions and emit them.
@@ -735,7 +742,7 @@ void LLVMIRGen::generateLLVMIRForModule(llvm::IRBuilder<> &builder) {
         continue;
       emitDataParallelKernel(builder, bundle);
       bundle.clear();
-      createNewFnIfNecessary();
+      splitBigMainFunctionIfNecessary(builder, numInstrsInCurrentFn);
       generateLLVMIRForInstr(builder, I);
       numInstrsInCurrentFn++;
       continue;
@@ -775,7 +782,7 @@ void LLVMIRGen::generateLLVMIRForModule(llvm::IRBuilder<> &builder) {
     if (!isBundleCompatible) {
       emitDataParallelKernel(builder, bundle);
       bundle.clear();
-      createNewFnIfNecessary();
+      splitBigMainFunctionIfNecessary(builder, numInstrsInCurrentFn);
     }
     // Add a data parallel instruction to the bundle.
     bundle.push_back(I);

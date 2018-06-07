@@ -174,6 +174,27 @@ class FunctionSpecializer {
            !callee->hasFnAttribute(llvm::Attribute::AttrKind::NoInline);
   }
 
+  /// Specialize calls with constant arguments inside the function \p F.
+  void runOnFunction(llvm::Function *F) {
+    // Collect all eligible calls in the current function.
+    llvm::SmallVector<llvm::CallInst *, 64> calls;
+    for (auto &BB : *F) {
+      for (auto &I : BB) {
+        auto *CI = dyn_cast<llvm::CallInst>(&I);
+        if (!CI)
+          continue;
+        if (!isEligibleForSpecialization(CI))
+          continue;
+        calls.push_back(CI);
+      }
+    }
+    // Try to specialize all the collected calls.
+    for (auto *call : calls) {
+      if (specializeCall(call))
+        erasedInstructions.push_back(call);
+    }
+  }
+
 public:
   FunctionSpecializer(llvm::ArrayRef<llvm::Function *> funcs) : funcs_(funcs) {}
 
@@ -226,30 +247,10 @@ public:
     // Bail if there is nothing to be specialized.
     if (!jitSpecializeDims && !jitSpecializeAllArguments_)
       return;
-    // Collect calls that were replaced by specialized calls and can be erased.
-    // The removal should happen after all specializations are done, because
-    // these call instructions are used by the keys in Specializations_ map.
-    llvm::SmallVector<llvm::Instruction *, 32> erasedInstructions;
+    // Specialize calls inside each of the requested function.
     for (auto *F : funcs_) {
-      // Collect all eligable calls in the current function.
-      llvm::SmallVector<llvm::CallInst *, 64> calls;
-      for (auto &BB : *F) {
-        for (auto &I : BB) {
-          auto *CI = dyn_cast<llvm::CallInst>(&I);
-          if (!CI)
-            continue;
-          if (!isEligibleForSpecialization(CI))
-            continue;
-          calls.push_back(CI);
-        }
-      }
-      // Try to specialize all the collected calls.
-      for (auto *call : calls) {
-        if (specializeCall(call))
-          erasedInstructions.push_back(call);
-      }
+      runOnFunction(F);
     }
-
     // Remove those calls that were successfully replaced by calls of
     // specialized functions. This needs to be done after all specializations,
     // because keys of Specializations_ use these Call instructions for the
@@ -334,30 +335,52 @@ private:
   /// If set, specialize taking into account the whole set of arguments,
   /// including buffer addresses.
   bool jitSpecializeAllArguments_{false};
+
+  /// Collects calls that were replaced by specialized calls and can be erased.
+  /// The removal should happen after all specializations are done, because
+  /// these call instructions are used by the keys in Specializations_ map.
+  llvm::SmallVector<llvm::Instruction *, 32> erasedInstructions;
 };
 
-} // namespace
+// Specialize all invocations of main function (and its parts, if main was split
+// into smaller functions) with constant parameters to produce a better
+// optimized code.
+static void specializeAllCallsOfMain(LLVMIRGen &irgen) {
+  // The top-level "main" with constant arguments is always invoked from
+  // "jitmain".
+  auto *callerOfMain = irgen.getModule().getFunction("jitmain");
 
-void LLVMIRGen::performSpecialization() {
-  // Specialize all invocations of main functions with constant parameters to
-  // produce a better optimized code.
-  auto *func = getModule().getFunction("jitmain");
-  while (func) {
+  // Check if the callee (which is either main or a chunk of main produced by
+  // splitting) ends with a call of another chunk of main that may have been
+  // produced by splitting the main function.
+
+  while (callerOfMain) {
     // Call of a "main" function is always the last instruction before return.
     auto instrBeforeTerminator =
-        std::prev(func->back().getTerminator()->getIterator());
+        std::prev(callerOfMain->back().getTerminator()->getIterator());
     auto *call = dyn_cast<llvm::CallInst>(instrBeforeTerminator);
     if (!call)
       break;
     // Specialize only calls of all "main" functions.
-    func = call->getCalledFunction();
-    if (!func || !func->getName().startswith("main"))
+    auto *callee = call->getCalledFunction();
+    if (!callee || !callee->getName().startswith("main"))
       break;
-    call = specializeCallWithConstantArguments(call);
-    func = call ? call->getCalledFunction() : nullptr;
+    // Try to specialize the call of main.
+    irgen.specializeCallWithConstantArguments(call);
+    // Perform another iteration to check if the current callee invokes another
+    // chunk of main at the end. This may happen if main was split into multiple
+    // chunks by LLVMIRgen::splitBigMainFunctionIfNecessary.
+    callerOfMain = callee;
   }
+}
 
-  // Specialize calls in all main functions.
+} // namespace
+
+void LLVMIRGen::performSpecialization() {
+  // Specialize calls of main.
+  specializeAllCallsOfMain(*this);
+  // Specialize calls of operations implementations inside main function (and
+  // its parts if it was split into multiple functions).
   llvm::SmallVector<llvm::Function *, 32> mainFunctions;
   for (auto &F : getModule()) {
     if (!F.getName().startswith("main")) {

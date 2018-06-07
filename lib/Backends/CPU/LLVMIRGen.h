@@ -169,6 +169,11 @@ class LLVMIRGen {
   /// for weights and activations, but behave like regular global variables from
   /// the debugger's perspective.
   void emitDebugGlobalVariableForValue(Value *val);
+  /// Split a big "main" LLVM function into pieces to avoid generating huge
+  /// functions. This is done to keep all generated LLVM functions rather small
+  /// to speed up the JIT compilation.
+  void splitBigMainFunctionIfNecessary(llvm::IRBuilder<> &builder,
+                                       size_t &numGlowInstrsInCurrentFn);
 
 public:
   /// Ctor.
