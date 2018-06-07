@@ -363,7 +363,7 @@ static void specializeAllCallsOfMain(LLVMIRGen &irgen) {
       break;
     // Specialize only calls of all "main" functions.
     auto *callee = call->getCalledFunction();
-    if (!callee || !callee->getName().startswith("main"))
+    if (!callee || !callee->getName().startswith(MAIN_FUNCTION_NAME))
       break;
     // Try to specialize the call of main.
     irgen.specializeCallWithConstantArguments(call);
@@ -383,7 +383,7 @@ void LLVMIRGen::performSpecialization() {
   // its parts if it was split into multiple functions).
   llvm::SmallVector<llvm::Function *, 32> mainFunctions;
   for (auto &F : getModule()) {
-    if (!F.getName().startswith("main")) {
+    if (!F.getName().startswith(MAIN_FUNCTION_NAME)) {
       continue;
     }
     mainFunctions.emplace_back(&F);

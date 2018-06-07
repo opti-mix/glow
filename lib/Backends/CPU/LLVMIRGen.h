@@ -38,9 +38,16 @@ class Instruction;
 class WeightVar;
 struct AllocationsInfo;
 
+// Name of the function containing the LLVM IR produced from the Glow IR.
+#define MAIN_FUNCTION_NAME "main"
+// Name of the JIT's main function.
+#define JIT_MAIN_FUNCTION_NAME "jitmain"
+
 /// This is a class containing a common logic for the generation of the LLVM IR
 /// from an IRFunction. The primary clients of this class are JITs and bundlers.
 class LLVMIRGen {
+public:
+private:
   /// The Module that holds the glow IR. This does not own the module.
   IRFunction *F_;
   /// The LLVM context.

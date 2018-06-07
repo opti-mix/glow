@@ -188,7 +188,7 @@ void LLVMIRGen::initDebugInfo() {
 
   // Store the base addresses into global variables to enable access to weights
   // and activations inside the debugger.
-  auto *main = getModule().getFunction("main");
+  auto *main = getModule().getFunction(MAIN_FUNCTION_NAME);
   dbgInfo_.constWeightsBaseAddressGV_ = new llvm::GlobalVariable(
       getModule(), builder_->getInt8PtrTy(), /* isConst */ false,
       llvm::GlobalValue::InternalLinkage, nullptr, "constWeightsBaseAddress");

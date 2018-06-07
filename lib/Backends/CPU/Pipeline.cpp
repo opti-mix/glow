@@ -127,7 +127,8 @@ void LLVMIRGen::optimizeLLVMModule(llvm::Function *F, llvm::TargetMachine &TM) {
   // and it is always invoked from either the "jitmain" function or the AOT
   // entry point. To enable better LLVM optimizations "main" should always be
   // inlined.
-  M->getFunction("main")->addFnAttr(llvm::Attribute::AttrKind::AlwaysInline);
+  M->getFunction(MAIN_FUNCTION_NAME)
+      ->addFnAttr(llvm::Attribute::AttrKind::AlwaysInline);
 
   llvm::legacy::FunctionPassManager FPM(M);
   llvm::legacy::PassManager PM;

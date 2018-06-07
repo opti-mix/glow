@@ -101,7 +101,8 @@ void LLVMIRGen::initTargetMachine(StringRef T,
 }
 
 std::string LLVMIRGen::getMainEntryName() const {
-  StringRef name = mainEntryName_.empty() ? "main" : F_->getGraph()->getName();
+  StringRef name =
+      mainEntryName_.empty() ? MAIN_FUNCTION_NAME : F_->getGraph()->getName();
   auto delimPos = name.rfind('/');
   if (delimPos != StringRef::npos)
     name = name.substr(delimPos + 1);
@@ -207,8 +208,9 @@ void LLVMIRGen::initCodeGen() {
   llvm::Type *paramTys[] = {int8PtrTy, int8PtrTy, int8PtrTy, sizeTPtrTy};
   llvm::FunctionType *jitFuncTy =
       llvm::FunctionType::get(returnTy, paramTys, /* isVarArg */ false);
-  auto *func = llvm::Function::Create(
-      jitFuncTy, llvm::Function::ExternalLinkage, "main", llmodule_.get());
+  auto *func =
+      llvm::Function::Create(jitFuncTy, llvm::Function::ExternalLinkage,
+                             MAIN_FUNCTION_NAME, llmodule_.get());
 
   // Setup the entry basic block and initialize the IR builder.
   llvm::BasicBlock *entry_bb = llvm::BasicBlock::Create(ctx_, "entry", func);
@@ -702,8 +704,9 @@ void LLVMIRGen::splitBigMainFunctionIfNecessary(
     llvm::FunctionType *jitFuncTy =
         llvm::FunctionType::get(returnTy, paramTys, /* isVarArg */ false);
     // Create a new function and make it private.
-    auto *func = llvm::Function::Create(
-        jitFuncTy, llvm::Function::PrivateLinkage, "main", llmodule_.get());
+    auto *func =
+        llvm::Function::Create(jitFuncTy, llvm::Function::PrivateLinkage,
+                               MAIN_FUNCTION_NAME, llmodule_.get());
     // This function should not be inlined as it would lead to huge functions.
     func->addFnAttr(llvm::Attribute::NoInline);
     std::vector<llvm::Value *> args;

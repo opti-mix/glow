@@ -302,7 +302,7 @@ void CPUBackend::emitBundleEntryFunction() {
   initFunctionCallArgs.push_back(offsetsArray);
   // Invoke the main entry with constant arguments and let LLVM optimizer make
   // use of it.
-  auto *entryF = irgen_.getModule().getFunction("main");
+  auto *entryF = irgen_.getModule().getFunction(MAIN_FUNCTION_NAME);
   entryF->setLinkage(llvm::Function::InternalLinkage);
   createCall(builder, entryF, initFunctionCallArgs);
   // Terminate the function.
