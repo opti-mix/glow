@@ -19,6 +19,7 @@
 
 #include "glow/Graph/Graph.h"
 #include "glow/Graph/Nodes.h"
+#include "glow/IR/IRUtils.h"
 #include "glow/IR/Instrs.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -352,7 +353,7 @@ static void addStringOption(std::vector<std::string> &options,
   options.push_back("-D" + name + "=" + value);
 }
 
-void OCLBackend::executeConvolution(OCLConvolutionInst *CC) {
+void OCLBackend::executeConvolution(const OCLConvolutionInst *CC) {
   auto input = CC->getSrc();
   auto output = CC->getDest();
   auto bias = CC->getBias();
@@ -475,7 +476,7 @@ void OCLBackend::doForwardPass() {
   DEBUG(llvm::dbgs() << "Copied " << copiedToDeviceBytes
                      << " bytes to OpenCL device\n");
 
-  for (auto &I : F_->getInstrs()) {
+  for (const auto *I : ForElementPtrIterator(F_->getInstrs())) {
     // The kernels are named after the name of the instruction, plus the "W"
     // suffix to prevent name colissions for functions like 'tanh' that are also
     // a part of the OpenCL runtime.
@@ -1223,7 +1224,7 @@ void OCLBackend::init() {
   }
 
   // Assign device-space addresses to the activations.
-  for (auto &I : F_->getInstrs()) {
+  for (const auto I : ForElementPtrIterator(F_->getInstrs())) {
     if (auto *A = llvm::dyn_cast<AllocActivationInst>(I)) {
       auto numBytes = I->getSizeInBytes();
       size_t addr = allocator_.allocate(numBytes);

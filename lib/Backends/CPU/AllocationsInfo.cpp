@@ -19,6 +19,7 @@
 #include "glow/CodeGen/MemoryAllocator.h"
 #include "glow/Graph/Graph.h"
 #include "glow/Graph/Nodes.h"
+#include "glow/IR/IRUtils.h"
 #include "glow/IR/Instrs.h"
 
 #include "llvm/Support/Debug.h"
@@ -101,10 +102,10 @@ void AllocationsInfo::allocateActivations(IRFunction *F) {
   MemoryAllocator activationsAllocator(0);
 
   // Maps activations and views to some offset within the heap.
-  llvm::DenseMap<Value *, size_t> activationAddr;
+  llvm::DenseMap<const Value *, size_t> activationAddr;
 
   // Assign device-space addresses to the activations.
-  for (auto &I : F->getInstrs()) {
+  for (const auto *I : ForElementPtrIterator(F->getInstrs())) {
     if (auto *A = dyn_cast<AllocActivationInst>(I)) {
       auto numBytes = I->getSizeInBytes();
       size_t addr = activationsAllocator.allocate(numBytes);
@@ -139,7 +140,7 @@ void AllocationsInfo::allocateActivations(IRFunction *F) {
 }
 
 void AllocationsInfo::allocateTensorViews(IRFunction *F) {
-  for (auto &I : F->getInstrs()) {
+  for (const auto *I : ForElementPtrIterator(F->getInstrs())) {
     if (auto *A = dyn_cast<TensorViewInst>(I)) {
       auto *viewOrigin = getOrigin(A);
       assert(allocatedAddressed_.count(viewOrigin) &&
@@ -176,7 +177,7 @@ void AllocationsInfo::numberValues(IRFunction *F) {
     valueNumbers_[w] = std::make_pair(kind, valueIdx++);
   }
   // Assign numbers to all activations and tensorviews.
-  for (auto &I : F->getInstrs()) {
+  for (const auto *I : ForElementPtrIterator(F->getInstrs())) {
     if (auto *A = dyn_cast<AllocActivationInst>(I)) {
       valueNumbers_[A] = std::make_pair(ValueKind::Activation, valueIdx++);
       continue;

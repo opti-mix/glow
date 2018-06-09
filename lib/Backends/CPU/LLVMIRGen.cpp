@@ -20,6 +20,7 @@
 #include "CommandLine.h"
 
 #include "glow/Graph/Graph.h"
+#include "glow/IR/IRUtils.h"
 #include "glow/IR/Instrs.h"
 #include "glow/Quantization/Quantization.h"
 
@@ -216,7 +217,7 @@ void LLVMIRGen::initCodeGen() {
 
 /// \returns the LLVM type corresponding to the type of elements stored in \p
 /// val.
-llvm::Type *LLVMIRGen::getElementType(llvm::IRBuilder<> &builder, Value *val) {
+llvm::Type *LLVMIRGen::getElementType(llvm::IRBuilder<> &builder, const Value *val) {
   switch (val->getElementType()) {
   case ElemKind::IndexTy:
     return builder.getIntNTy(sizeof(size_t) * 8);
@@ -676,7 +677,7 @@ void LLVMIRGen::generateLLVMIRForModule(llvm::IRBuilder<> &builder) {
   // Group instructions into bundles of shape compatible data parallel
   // instructions and emit them.
   llvm::SmallVector<Instruction *, 32> bundle;
-  for (auto I : instrs) {
+  for (auto *I : ForElementPtrIterator(instrs)) {
     if (!I->isDataParallel()) {
       // Ignore memory management instructions as they are handled by the
       // MemoryManager and are NOPs for a JIT.

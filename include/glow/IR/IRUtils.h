@@ -123,12 +123,52 @@ public:
   const_iterator end() const { return const_iterator{v_, 1}; }
 };
 
+/// A convenience iterator type that returns element pointers instead of element
+/// references. It essentially just wraps the usual container iterator and
+/// overloads the dereferencing * operator to return pointers.
+template <typename T> struct ContainerElementPtrIterator {
+  /// The container being iterated.
+  T &container;
+  /// The iterator type.
+  typedef decltype(container.begin()) iterator;
+  typedef typename T::pointer pointer;
+  typedef typename T::const_pointer const_pointer;
+  /// The inner iterator type that overloads the dereferencing * operator to
+  /// return pointers.
+  struct InnerIterator {
+    // The underlying iterator being wrapped.
+    iterator it;
+    InnerIterator(iterator it) : it(it) {}
+    // Return a (const) pointer instead of reference to the element of the
+    // container.
+    typename std::conditional<std::is_const<T>{}, const_pointer, pointer>::type
+    operator*() {
+      return &*it;
+    }
+    iterator operator++() { return ++it; }
+    bool operator!=(const InnerIterator &o) { return it != o.it; }
+  };
+  ContainerElementPtrIterator(T &list) : container(list) {}
+  InnerIterator begin() { return InnerIterator(container.begin()); }
+  InnerIterator end() { return InnerIterator(container.end()); }
+};
+
+/// Create a range-iterator that returns element pointers instead of element
+/// references.
+template <typename T>
+ContainerElementPtrIterator<T> ForElementPtrIterator(T &container) {
+  return ContainerElementPtrIterator<T>(container);
+}
+
 /// Get the allocation corrsponding to th value \p V. It can look through
 /// tensorview instructions. \returns found allocation or nullptr.
 Value *getAllocationOrigin(Value *V);
 
 /// \returns peels off the layers of tensorviews from a value \p V.
 Value *getOrigin(Value *V);
+
+/// \returns peels off the layers of tensorviews from a value \p V.
+const Value *getOrigin(const Value *V);
 
 } // namespace glow
 

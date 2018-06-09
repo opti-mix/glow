@@ -18,6 +18,7 @@
 
 #include "glow/Graph/Graph.h"
 #include "glow/Graph/Nodes.h"
+#include "glow/IR/IRUtils.h"
 #include "glow/IR/Instrs.h"
 
 #include "llvm/Support/Casting.h"
@@ -160,7 +161,7 @@ void Interpreter::doForwardPass() {
   }
 #define DEF_BACKEND_SPECIFIC_INSTR(CLASS, NAME)
   // Dispatch the interpreter on each instruction in the program:
-  for (auto *I : F_->getInstrs()) {
+  for (const auto *I : ForElementPtrIterator(F_->getInstrs())) {
     switch (I->getKind()) {
 #include "AutoGenInstr.def"
 
