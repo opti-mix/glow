@@ -111,7 +111,7 @@ public:
     for (auto it = instrs.begin(), e = instrs.end(); it != e;
          instIdx += MAX_SLOT, ++it) {
       numToInstr_.push_back(it);
-      instrToNum_[*it] = instIdx;
+      instrToNum_[&*it] = instIdx;
     }
   }
 
@@ -156,7 +156,9 @@ public:
 
   /// \returns the number of the instruction, or -1 if the instruction is not
   /// numbered.
-  int64_t getInstrNumber(InstrIterator IT) const { return getInstrNumber(*IT); }
+  int64_t getInstrNumber(InstrIterator IT) const {
+    return getInstrNumber(&*IT);
+  }
 
   /// \returns the instruction with a given number.
   InstrIterator getInstr(size_t instrNumber) const {
@@ -184,32 +186,33 @@ using InstructionPtrSet = std::unordered_set<Instruction *>;
 /// Hoists Dealloc instructions right after their last use.
 static void hoistDealloc(IRFunction &M) {
   // Maps activation instructions to their last non-dealloc user.
-  std::unordered_map<Value *, InstrIterator> lastUser;
+  std::unordered_map<Value *, Instruction *> lastUser;
   // Dealloc instructions in the current function.
-  llvm::SmallVector<InstrIterator, 64> deallocs;
+  InstructionPtrSet deallocs;
   auto &instrs = M.getInstrs();
 
   // Record the last use of each dealloc.
   for (auto it = instrs.begin(), e = instrs.end(); it != e; ++it) {
-    if (isa<DeallocActivationInst>(*it)) {
+    auto *I = &*it;
+    if (isa<DeallocActivationInst>(I)) {
       // Collect dealloc instructions.
-      deallocs.push_back(it);
+      deallocs.insert(I);
       continue;
     }
 
-    if (auto alloc = dyn_cast<AllocActivationInst>(*it)) {
-      lastUser[alloc] = it;
+    if (auto alloc = dyn_cast<AllocActivationInst>(I)) {
+      lastUser[alloc] = I;
       continue;
     }
 
-    for (int i = 0, e = (*it)->getNumOperands(); i < e; i++) {
-      auto op = (*it)->getOperand(i).first;
+    for (int i = 0, e = I->getNumOperands(); i < e; i++) {
+      auto op = I->getOperand(i).first;
       // Consider any use of a tensor_view to be also a use
       // of its source tensor. This is required to make
       // sure that a lifetime of a tensor_view is always
       // enclosed inside the lifetime of its source tensor.
       if (auto *alloc = getAllocationOrigin(op)) {
-        lastUser[alloc] = it;
+        lastUser[alloc] = I;
         continue;
       }
     }
@@ -219,21 +222,22 @@ static void hoistDealloc(IRFunction &M) {
   // the dealloc instructions.
   for (auto it = deallocs.begin(), e = deallocs.end(); it != e;
        /* increment below */) {
-    auto curr = *it;
+    auto *curr = *it;
     ++it;
-    auto *da = dyn_cast<DeallocActivationInst>(*curr);
+    auto *da = dyn_cast<DeallocActivationInst>(&*curr);
     if (!da) {
       continue;
     }
 
     auto *alloc = cast<AllocActivationInst>(getOrigin(da->getSrc()));
-    auto where = lastUser[alloc];
-    if (std::next(where) == curr) {
+    auto *where = lastUser[alloc];
+    if (std::next(where->getIterator()) == curr->getIterator()) {
       // No need to move the instruction, because the last use was
       // right before the deallocation.
       continue;
     }
-    ++where;
+    // Get the instruction after where.
+    where = &*std::next(where->getIterator());
     M.moveInstruction(where, curr);
   }
 }
@@ -241,26 +245,27 @@ static void hoistDealloc(IRFunction &M) {
 /// Sink Alloc instructions right before their first use.
 static void sinkAllocas(IRFunction &M) {
   /// A list of allocas to reschedule.
-  std::unordered_set<AllocActivationInst *> allocs;
+  InstructionPtrSet allocs;
   auto &instrs = M.getInstrs();
 
   // Remove all of the allocas.
   for (auto it = instrs.begin(), e = instrs.end(); it != e;) {
     auto curr = it;
-    auto *aa = dyn_cast<AllocActivationInst>(*curr);
+    auto *aa = dyn_cast<AllocActivationInst>(&*curr);
     if (!aa) {
       ++it;
       continue;
     }
 
     allocs.insert(aa);
-    it = M.removeInstruction(curr);
+    it = M.removeInstruction(&*curr);
   }
 
   // Place all of the allocas in the right place:
   for (auto it = instrs.begin(), e = instrs.end(); it != e; ++it) {
-    for (int i = 0, e = (*it)->getNumOperands(); i < e; i++) {
-      auto op = (*it)->getOperand(i).first;
+    auto *I = &*it;
+    for (int i = 0, e = I->getNumOperands(); i < e; i++) {
+      auto op = I->getOperand(i).first;
       auto aa = dyn_cast<AllocActivationInst>(getOrigin(op));
       if (!aa) {
         continue;
@@ -270,7 +275,7 @@ static void sinkAllocas(IRFunction &M) {
         continue;
       }
       allocs.erase(A);
-      M.insertInstruction(it, aa);
+      M.insertInstruction(I, aa);
       if (allocs.empty())
         return;
     }
@@ -288,7 +293,7 @@ static void sinkTensorViews(IRFunction &M) {
   // Remove all of the tensorviews.
   for (auto it = instrs.begin(), e = instrs.end(); it != e;) {
     auto curr = it;
-    auto *tv = dyn_cast<TensorViewInst>(*curr);
+    auto *tv = dyn_cast<TensorViewInst>(&*curr);
     if (!tv) {
       ++it;
       continue;
@@ -301,15 +306,16 @@ static void sinkTensorViews(IRFunction &M) {
     }
 
     tensorviews.insert(tv);
-    it = M.removeInstruction(curr);
+    it = M.removeInstruction(&*curr);
   }
 
   // Place all of the tensorviews in the right place:
   for (auto it = instrs.begin(), e = instrs.end(); it != e;) {
     // Holds the next value for the iterator.
     auto nextIt = instrs.end();
-    for (int i = 0, e = (*it)->getNumOperands(); i < e; i++) {
-      auto op = (*it)->getOperand(i).first;
+    auto *I = &*it;
+    for (int i = 0, e = I->getNumOperands(); i < e; i++) {
+      auto op = I->getOperand(i).first;
       auto tv = dyn_cast<TensorViewInst>(op);
       if (!tv) {
         continue;
@@ -318,7 +324,7 @@ static void sinkTensorViews(IRFunction &M) {
       if (TV == tensorviews.end()) {
         continue;
       }
-      auto inserted = M.insertInstruction(it, tv);
+      auto inserted = M.insertInstruction(I, tv);
       tensorviews.erase(TV);
       if (tensorviews.empty())
         return;
@@ -346,8 +352,8 @@ static void deleteDeadAllocs(IRFunction &M) {
 
   // Remove all unused tensorviews.
   for (auto &I : instrs) {
-    if (isa<TensorViewInst>(I) && I->getNumUsers() == 0) {
-      erasedInstructions.push_back(I);
+    if (isa<TensorViewInst>(&I) && I.getNumUsers() == 0) {
+      erasedInstructions.push_back(&I);
     }
   }
 
@@ -359,9 +365,9 @@ static void deleteDeadAllocs(IRFunction &M) {
 
   // Remove all of the DeallocActivationInst that close unused allocs.
   for (auto &I : instrs) {
-    const auto *DA = dyn_cast<const DeallocActivationInst>(I);
+    const auto *DA = dyn_cast<const DeallocActivationInst>(&I);
     if (DA && DA->getAlloc()->getNumUsers() < 2) {
-      erasedInstructions.push_back(I);
+      erasedInstructions.push_back(&I);
     }
   }
 
@@ -372,8 +378,8 @@ static void deleteDeadAllocs(IRFunction &M) {
 
   // Remove the unused allocs.
   for (auto &I : instrs) {
-    if (isa<const AllocActivationInst>(I) && I->getNumUsers() < 2) {
-      erasedInstructions.push_back(I);
+    if (isa<const AllocActivationInst>(I) && I.getNumUsers() < 2) {
+      erasedInstructions.push_back(&I);
     }
   }
 
@@ -535,7 +541,7 @@ static void calculateLiveIntervals(const IRFunction &M,
   // block. Notice that we ignore Dealloc instructions in our analysis.
   for (auto it = instrs.begin(), e = instrs.end(); it != e;
        ++it, instIdx += LiveIntervalsInstructionNumbering::MAX_SLOT) {
-    auto *I = *it;
+    auto *I = &*it;
     // Ignore deallocations in our liveness calculation.
     if (isa<DeallocActivationInst>(I)) {
       continue;
@@ -709,7 +715,7 @@ static void replaceAllUsesInsideIntervalWith(
   IRBuilder B(&M);
   for (auto it = instrNumbering.getInstr(liveInterval.begin_), e = instrs.end();
        it != e && instIdx <= liveInterval.end_; ++it) {
-    auto *I = *it;
+    auto *I = &*it;
     if (isa<DeallocActivationInst>(I))
       continue;
     // Ignore any new instructions which were not present as the instruction
@@ -744,11 +750,11 @@ static void replaceAllUsesInsideIntervalWith(
       if (op->getType() != replacement->getType()) {
         // Perform a cast if required.
         std::vector<size_t> offsets(replacement->dims().size(), 0);
-        auto *tv = B.createTensorViewInst((*it)->getName(), replacement,
+        auto *tv = B.createTensorViewInst(I->getName(), replacement,
                                           op->getType(), offsets);
         assert(tv->getType()->size() == with->getType()->size() &&
                "Replacement must have same number of elements as original.");
-        M.moveInstruction(it, tv);
+        M.moveInstruction(I, tv);
         replacement = tv;
       }
 
@@ -1070,7 +1076,7 @@ static void shareBuffers(IRFunction &M) {
 
   // For each instruction, in reverse order.
   for (auto it = instrs.rbegin(), e = instrs.rend(); it != e; ++it) {
-    Instruction *I = *it;
+    Instruction *I = &*it;
     auto instIdx = instrNumbering.getInstrNumber(I);
     if (instIdx < 0)
       continue;
@@ -1116,12 +1122,12 @@ static void eliminateDeadStores(IRFunction &M) {
   // This ensures that last stored into WeightVars are not
   // eliminated.
   for (auto *WV : M.getWeights()) {
-    memoryState[WV].lastSeenRead_ = *std::prev(instrs.end());
+    memoryState[WV].lastSeenRead_ = &*std::prev(instrs.end());
   }
 
   // Iterate over instructions in reversed order.
   for (auto it = instrs.rbegin(), e = instrs.rend(); it != e; ++it) {
-    auto *I = *it;
+    auto *I = &*it;
     if (isa<DeallocActivationInst>(I) || isa<AllocActivationInst>(I) ||
         isa<TensorViewInst>(I))
       continue;
@@ -1215,7 +1221,7 @@ void optimizeInserts(IRFunction &M) {
   InstructionPtrSet erasedInstructions;
   IRBuilder B(&M);
   for (auto it = instrs.begin(), e = instrs.end(); it != e; ++it) {
-    auto *I = *it;
+    auto *I = &*it;
 
     // Look for compatible InsertTensors.
     auto *ITI = dyn_cast<InsertTensorInst>(I);
@@ -1287,11 +1293,11 @@ void optimizeInserts(IRFunction &M) {
     replaceAllNonDeallocUsersWith(insertSourceAAI, TVI);
 
     // Move the TVI to the location of the InsertTensor.
-    auto itTVI = M.moveInstruction(it, TVI);
+    auto itTVI = M.moveInstruction(I, TVI);
 
     // Move the original writer into insertSourceAAI to now come after the TVI,
     // preserving the order of writes into insertDestAAI.
-    M.moveInstruction(++itTVI, origWriter);
+    M.moveInstruction(&*++itTVI, origWriter);
 
     // Queue up removal of the now-unnecessary InsertTensor. Unused
     // allocs/deallocs will be deleted by later passes.
@@ -1309,7 +1315,7 @@ void optimizeExtracts(IRFunction &M) {
   InstructionPtrSet erasedInstructions;
   IRBuilder B(&M);
   for (auto it = instrs.begin(), e = instrs.end(); it != e; ++it) {
-    auto *I = *it;
+    auto *I = &*it;
 
     // Look for compatible ExtractTensors.
     auto *ETI = dyn_cast<ExtractTensorInst>(I);
@@ -1356,7 +1362,7 @@ void optimizeExtracts(IRFunction &M) {
     replaceAllNonDeallocUsersWith(extractDestAAI, TVI);
 
     // Move the TVI to the location of the ExtractTensor.
-    M.moveInstruction(it, TVI);
+    M.moveInstruction(I, TVI);
 
     // Queue up removal of the now-unnecessary ExtractTensor. Unused
     // allocs/deallocs will be deleted by later passes.
@@ -1375,14 +1381,15 @@ static void performDebugInstrumentation(IRFunction &M) {
 
   auto &instrs = M.getInstrs();
   for (auto it = instrs.begin(), e = instrs.end(); it != e;) {
+    auto *I = &*it;
     auto next = std::next(it);
-    if (isa<DebugPrintInst>(*it) || isa<AllocActivationInst>(*it) ||
-        isa<DeallocActivationInst>(*it)) {
+    if (isa<DebugPrintInst>(I) || isa<AllocActivationInst>(I) ||
+        isa<DeallocActivationInst>(I)) {
       it = next;
       continue;
     }
-    auto instrName = (*it)->getName();
-    for (const auto &Op : (*it)->getOperands()) {
+    auto instrName = I->getName();
+    for (const auto &Op : I->getOperands()) {
       // Dump inputs of the current instruction before the instruction.
       if (Op.second != OperandKind::Out) {
         std::string name = "debug_print.before.";
@@ -1390,9 +1397,9 @@ static void performDebugInstrumentation(IRFunction &M) {
         name += ".";
         name += instrName;
         name += ".";
-        name += (*it)->getKindName();
+        name += I->getKindName();
         auto *dumpInstr = new DebugPrintInst(&M, name, Op.first);
-        M.insertInstruction(it, dumpInstr);
+        M.insertInstruction(I, dumpInstr);
       }
 
       // Dump outputs of the current instruction after the instruction.
@@ -1402,9 +1409,9 @@ static void performDebugInstrumentation(IRFunction &M) {
         name += ".";
         name += instrName;
         name += ".";
-        name += (*it)->getKindName();
+        name += I->getKindName();
         auto *dumpInstr = new DebugPrintInst(&M, name, Op.first);
-        M.insertInstruction(next, dumpInstr);
+        M.insertInstruction(&*next, dumpInstr);
       }
     }
     it = next;
@@ -1417,7 +1424,7 @@ void performPeepholeOptimizations(IRFunction &M) {
   IRBuilder B(&M);
   for (auto it = instrs.begin(), e = instrs.end(); it != e;) {
     auto cur = it;
-    auto *I = *cur;
+    auto *I = &*cur;
     it = std::next(it);
     // PoolMaxWithXYInst -> PoolMaxInst.
     if (auto *PMI = dyn_cast<PoolMaxWithXYInst>(I)) {
@@ -1430,8 +1437,8 @@ void performPeepholeOptimizations(IRFunction &M) {
 
       B.createPoolMaxInst(PMI->getName(), PMI->getDest(), PMI->getSrc(),
                           PMI->getKernel(), PMI->getStride(), PMI->getPad());
-      it = M.moveInstruction(cur, instrs.back());
-      M.eraseInstruction(cur);
+      it = M.moveInstruction(I, &instrs.back());
+      M.eraseInstruction(I);
       continue;
     }
 
@@ -1447,12 +1454,12 @@ void performPeepholeOptimizations(IRFunction &M) {
             std::vector<size_t> offsets(src->getType()->dims().size(), 0);
             auto *TVI = B.createTensorViewInst(TI->getName(), src,
                                                dest->getType(), offsets);
-            M.moveInstruction(cur, instrs.back());
+            M.moveInstruction(I, &instrs.back());
             src = TVI;
           }
           B.createCopyInst(TI->getName(), TI->getDest(), src);
-          it = M.moveInstruction(cur, instrs.back());
-          M.eraseInstruction(cur);
+          it = M.moveInstruction(I, &instrs.back());
+          M.eraseInstruction(I);
           continue;
         }
       }
@@ -1473,8 +1480,8 @@ void performPeepholeOptimizations(IRFunction &M) {
       if (wrhs && isa<SplatInst>(wrhs))
         continue;
       B.createElementMaxInst(EM->getName(), EM->getDest(), rhs, lhs);
-      it = M.moveInstruction(cur, instrs.back());
-      M.eraseInstruction(cur);
+      it = M.moveInstruction(I, &instrs.back());
+      M.eraseInstruction(I);
       continue;
     }
 
@@ -1502,7 +1509,7 @@ void performPeepholeOptimizations(IRFunction &M) {
           continue;
         }
 
-        M.eraseInstruction(cur);
+        M.eraseInstruction(I);
       }
       continue;
     }

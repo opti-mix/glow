@@ -38,7 +38,7 @@ void IRBuilder::deallocateActiveInstrs() {
   // Inserts dealloc instructions for all instructions that don't have
   // 'dealloc' as one of their users.
   for (auto it = instrs.begin(), e = instrs.end(); it != e; ++it) {
-    auto AA = dyn_cast<AllocActivationInst>(*it);
+    auto AA = dyn_cast<AllocActivationInst>(&*it);
     if (!AA) {
       continue;
     }

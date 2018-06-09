@@ -160,7 +160,8 @@ void Interpreter::doForwardPass() {
   }
 #define DEF_BACKEND_SPECIFIC_INSTR(CLASS, NAME)
   // Dispatch the interpreter on each instruction in the program:
-  for (auto *I : F_->getInstrs()) {
+  for (auto &Instr : F_->getInstrs()) {
+    auto *I = &Instr;
     switch (I->getKind()) {
 #include "AutoGenInstr.def"
 

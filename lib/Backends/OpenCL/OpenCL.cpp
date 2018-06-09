@@ -475,7 +475,8 @@ void OCLBackend::doForwardPass() {
   DEBUG(llvm::dbgs() << "Copied " << copiedToDeviceBytes
                      << " bytes to OpenCL device\n");
 
-  for (auto &I : F_->getInstrs()) {
+  for (auto &Instr : F_->getInstrs()) {
+    Instruction *I = &Instr;
     // The kernels are named after the name of the instruction, plus the "W"
     // suffix to prevent name colissions for functions like 'tanh' that are also
     // a part of the OpenCL runtime.
@@ -1223,7 +1224,8 @@ void OCLBackend::init() {
   }
 
   // Assign device-space addresses to the activations.
-  for (auto &I : F_->getInstrs()) {
+  for (auto &Instr : F_->getInstrs()) {
+    auto *I = &Instr;
     if (auto *A = llvm::dyn_cast<AllocActivationInst>(I)) {
       auto numBytes = I->getSizeInBytes();
       size_t addr = allocator_.allocate(numBytes);

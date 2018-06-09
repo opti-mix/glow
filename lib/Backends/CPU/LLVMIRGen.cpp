@@ -676,8 +676,8 @@ void LLVMIRGen::generateLLVMIRForModule(llvm::IRBuilder<> &builder) {
   // Group instructions into bundles of shape compatible data parallel
   // instructions and emit them.
   llvm::SmallVector<Instruction *, 32> bundle;
-  for (auto I : instrs) {
-    if (!I->isDataParallel()) {
+  for (auto &I : instrs) {
+    if (!I.isDataParallel()) {
       // Ignore memory management instructions as they are handled by the
       // MemoryManager and are NOPs for a JIT.
       if (isa<AllocActivationInst>(I) || isa<DeallocActivationInst>(I) ||
@@ -685,7 +685,7 @@ void LLVMIRGen::generateLLVMIRForModule(llvm::IRBuilder<> &builder) {
         continue;
       emitDataParallelKernel(builder, bundle);
       bundle.clear();
-      generateLLVMIRForInstr(builder, I);
+      generateLLVMIRForInstr(builder, &I);
       continue;
     }
 
@@ -694,7 +694,7 @@ void LLVMIRGen::generateLLVMIRForModule(llvm::IRBuilder<> &builder) {
     // Check if the current instruction is shape compatible with the bundle.
     bool isBundleCompatible = true;
     if (!bundle.empty()) {
-      auto val = I->getOperand(0).first;
+      auto val = I.getOperand(0).first;
       auto bundleVal = bundle.back()->getOperand(0).first;
       // Check if shapes have the same amount of elements.
       isBundleCompatible = val->size() == bundleVal->size();
@@ -705,7 +705,7 @@ void LLVMIRGen::generateLLVMIRForModule(llvm::IRBuilder<> &builder) {
     // bundled instructions. In case this condition does not hold, the current
     // instruction cannot be included into the data-parallel bundle, because
     // overlapping operand buffers are not data parallel.
-    for (auto op : I->getOperands()) {
+    for (auto op : I.getOperands()) {
       // Skip non-mutated operands.
       if (op.second == OperandKind::In)
         continue;
@@ -725,7 +725,7 @@ void LLVMIRGen::generateLLVMIRForModule(llvm::IRBuilder<> &builder) {
       bundle.clear();
     }
     // Add a data parallel instruction to the bundle.
-    bundle.push_back(I);
+    bundle.push_back(&I);
   }
 
   emitDataParallelKernel(builder, bundle);
