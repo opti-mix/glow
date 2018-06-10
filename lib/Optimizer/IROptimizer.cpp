@@ -82,8 +82,8 @@ struct Interval {
 /// different numbers to read and write slots of the same instruction, which
 /// allows for an easy construction of a very precise set of live intervals.
 class LiveIntervalsInstructionNumbering {
-  using NumberedInstructionMap = std::vector<InstrIterator>;
-  using InstructionNumbersMap = std::unordered_map<Instruction *, size_t>;
+  using NumberedInstructionMap = std::vector<Instruction *>;
+  using InstructionNumbersMap = std::unordered_map<const Instruction *, size_t>;
   /// Maps the number to an instruction.
   NumberedInstructionMap numToInstr_;
   /// Maps an instruction to its number.
@@ -107,11 +107,10 @@ public:
     auto &instrs = M.getInstrs();
     size_t instIdx = 0;
     numToInstr_.reserve(instrs.size());
-
-    for (auto it = instrs.begin(), e = instrs.end(); it != e;
-         instIdx += MAX_SLOT, ++it) {
-      numToInstr_.push_back(it);
-      instrToNum_[&*it] = instIdx;
+    for (auto *I : ForElementPtrIterator(instrs)) {
+      numToInstr_.push_back(I);
+      instrToNum_[I] = instIdx;
+      instIdx += MAX_SLOT;
     }
   }
 
@@ -147,21 +146,15 @@ public:
 
   /// \returns the number of the instruction, or -1 if the instruction is not
   /// numbered.
-  int64_t getInstrNumber(Instruction *I) const {
+  int64_t getInstrNumber(const Instruction *I) const {
     auto result = instrToNum_.find(I);
     if (result == instrToNum_.end())
       return -1;
     return (int64_t)result->second;
   }
 
-  /// \returns the number of the instruction, or -1 if the instruction is not
-  /// numbered.
-  int64_t getInstrNumber(InstrIterator IT) const {
-    return getInstrNumber(&*IT);
-  }
-
   /// \returns the instruction with a given number.
-  InstrIterator getInstr(size_t instrNumber) const {
+  Instruction *getInstr(size_t instrNumber) const {
     assert(instrNumber / MAX_SLOT < numToInstr_.size());
     return numToInstr_[instrNumber / MAX_SLOT];
   }
@@ -179,7 +172,7 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &os, const Interval &I) {
 /// writes, it would contain multiple live intervals, one per write.
 using Intervals = llvm::SmallVector<Interval, 4>;
 /// Maping from a memory buffer to its live intervals.
-using LiveIntervalsMap = std::unordered_map<Value *, Intervals>;
+using LiveIntervalsMap = std::unordered_map<const Value *, Intervals>;
 /// Set of instructions.
 using InstructionPtrSet = std::unordered_set<Instruction *>;
 
@@ -192,8 +185,9 @@ static void hoistDealloc(IRFunction &M) {
   auto &instrs = M.getInstrs();
 
   // Record the last use of each dealloc.
-  for (auto it = instrs.begin(), e = instrs.end(); it != e; ++it) {
-    auto *I = &*it;
+  for (auto *I : ForElementPtrIterator(instrs)) {
+    // for (auto it = instrs.begin(), e = instrs.end(); it != e; ++it) {
+    // auto *I = &*it;
     if (isa<DeallocActivationInst>(I)) {
       // Collect dealloc instructions.
       deallocs.insert(I);
@@ -250,20 +244,21 @@ static void sinkAllocas(IRFunction &M) {
 
   // Remove all of the allocas.
   for (auto it = instrs.begin(), e = instrs.end(); it != e;) {
-    auto curr = it;
-    auto *aa = dyn_cast<AllocActivationInst>(&*curr);
+    auto *I = &*it;
+    ++it;
+    auto *aa = dyn_cast<AllocActivationInst>(I);
     if (!aa) {
-      ++it;
       continue;
     }
 
     allocs.insert(aa);
-    it = M.removeInstruction(&*curr);
+    M.removeInstruction(I);
   }
 
   // Place all of the allocas in the right place:
-  for (auto it = instrs.begin(), e = instrs.end(); it != e; ++it) {
-    auto *I = &*it;
+  for (auto *I : ForElementPtrIterator(instrs)) {
+    // for (auto it = instrs.begin(), e = instrs.end(); it != e; ++it) {
+    // auto *I = &*it;
     for (int i = 0, e = I->getNumOperands(); i < e; i++) {
       auto op = I->getOperand(i).first;
       auto aa = dyn_cast<AllocActivationInst>(getOrigin(op));
@@ -292,21 +287,20 @@ static void sinkTensorViews(IRFunction &M) {
 
   // Remove all of the tensorviews.
   for (auto it = instrs.begin(), e = instrs.end(); it != e;) {
-    auto curr = it;
-    auto *tv = dyn_cast<TensorViewInst>(&*curr);
+    auto *I = &*it;
+    ++it;
+    auto *tv = dyn_cast<TensorViewInst>(I);
     if (!tv) {
-      ++it;
       continue;
     }
 
     // Ignore tensorviews that are unused.
     if (!tv->hasUsers()) {
-      ++it;
       continue;
     }
 
     tensorviews.insert(tv);
-    it = M.removeInstruction(&*curr);
+    M.removeInstruction(I);
   }
 
   // Place all of the tensorviews in the right place:
@@ -351,9 +345,10 @@ static void deleteDeadAllocs(IRFunction &M) {
   llvm::SmallVector<Instruction *, 16> erasedInstructions{};
 
   // Remove all unused tensorviews.
-  for (auto &I : instrs) {
-    if (isa<TensorViewInst>(&I) && I.getNumUsers() == 0) {
-      erasedInstructions.push_back(&I);
+  for (auto *I : ForElementPtrIterator(instrs)) {
+    // for (auto &I : instrs) {
+    if (isa<TensorViewInst>(I) && I->getNumUsers() == 0) {
+      erasedInstructions.push_back(I);
     }
   }
 
@@ -364,10 +359,11 @@ static void deleteDeadAllocs(IRFunction &M) {
   erasedInstructions.clear();
 
   // Remove all of the DeallocActivationInst that close unused allocs.
-  for (auto &I : instrs) {
-    const auto *DA = dyn_cast<const DeallocActivationInst>(&I);
+  for (auto *I : ForElementPtrIterator(instrs)) {
+    // for (auto &I : instrs) {
+    const auto *DA = dyn_cast<const DeallocActivationInst>(I);
     if (DA && DA->getAlloc()->getNumUsers() < 2) {
-      erasedInstructions.push_back(&I);
+      erasedInstructions.push_back(I);
     }
   }
 
@@ -377,9 +373,9 @@ static void deleteDeadAllocs(IRFunction &M) {
   erasedInstructions.clear();
 
   // Remove the unused allocs.
-  for (auto &I : instrs) {
-    if (isa<const AllocActivationInst>(I) && I.getNumUsers() < 2) {
-      erasedInstructions.push_back(&I);
+  for (auto *I : ForElementPtrIterator(instrs)) {
+    if (isa<AllocActivationInst>(I) && I->getNumUsers() < 2) {
+      erasedInstructions.push_back(I);
     }
   }
 
@@ -713,7 +709,8 @@ static void replaceAllUsesInsideIntervalWith(
   auto withOrigin = getOrigin(with);
   unsigned instIdx = 0;
   IRBuilder B(&M);
-  for (auto it = instrNumbering.getInstr(liveInterval.begin_), e = instrs.end();
+  for (auto it = instrNumbering.getInstr(liveInterval.begin_)->getIterator(),
+            e = instrs.end();
        it != e && instIdx <= liveInterval.end_; ++it) {
     auto *I = &*it;
     if (isa<DeallocActivationInst>(I))
@@ -1220,8 +1217,10 @@ void optimizeInserts(IRFunction &M) {
   auto &instrs = M.getInstrs();
   InstructionPtrSet erasedInstructions;
   IRBuilder B(&M);
-  for (auto it = instrs.begin(), e = instrs.end(); it != e; ++it) {
-    auto *I = &*it;
+
+  for (auto *I : ForElementPtrIterator(instrs)) {
+    // for (auto it = instrs.begin(), e = instrs.end(); it != e; ++it) {
+    // auto *I = &*it;
 
     // Look for compatible InsertTensors.
     auto *ITI = dyn_cast<InsertTensorInst>(I);
@@ -1314,8 +1313,10 @@ void optimizeExtracts(IRFunction &M) {
   auto &instrs = M.getInstrs();
   InstructionPtrSet erasedInstructions;
   IRBuilder B(&M);
-  for (auto it = instrs.begin(), e = instrs.end(); it != e; ++it) {
-    auto *I = &*it;
+
+  for (auto *I : ForElementPtrIterator(instrs)) {
+    // for (auto it = instrs.begin(), e = instrs.end(); it != e; ++it) {
+    // auto *I = &*it;
 
     // Look for compatible ExtractTensors.
     auto *ETI = dyn_cast<ExtractTensorInst>(I);

@@ -25,7 +25,6 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/ilist.h"
 #include "llvm/ADT/ilist_node.h"
-#include "llvm/ADT/simple_ilist.h"
 
 #include <list>
 #include <unordered_map>
@@ -151,11 +150,11 @@ public:
   void pushOperand(Operand op);
 
   Instruction(IRFunction *M, llvm::StringRef name, Kinded::Kind k, TypeRef Ty)
-      : Value(name, Ty, k), F_(M) {}
+      : Value(name, Ty, k), F_(nullptr) {}
 
   Instruction(IRFunction *M, llvm::StringRef name, Kinded::Kind k, TypeRef Ty,
               llvm::ArrayRef<Operand> ops)
-      : Value(name, Ty, k), F_(M) {
+      : Value(name, Ty, k), F_(nullptr) {
     for (auto &op : ops) {
       pushOperand(op);
     }
@@ -351,12 +350,6 @@ public:
   /// Moves an instruction belonging to a function before the place described by
   /// \where.
   InstrIterator moveInstruction(Instruction *where, Instruction *I);
-
-  /// \returns instruction's list iterator corresponding to the instruction.
-  InstrIterator getInstrIterator(Instruction *I);
-
-  /// \returns instruction's list iterator corresponding to the instruction.
-  InstrConstIterator getInstrIterator(const Instruction *I) const;
 };
 
 /// Iterator over inteructions.
@@ -365,7 +358,7 @@ using InstrConstIterator = IRFunction::InstrConstIterator;
 
 /// A helper class used for instructions numbering.
 class InstructionNumbering {
-  using NumberedInstructionMap = std::vector<InstrConstIterator>;
+  using NumberedInstructionMap = std::vector<const Instruction *>;
   using InstructionNumbersMap = std::unordered_map<const Instruction *, size_t>;
   /// Maps the number to an instruction.
   NumberedInstructionMap numToInstr_;
@@ -377,23 +370,12 @@ public:
 
   /// Return the instruction with a given number or
   /// M.getInstrs().end() if this instruction is not assigned any number.
-  InstrConstIterator getInstr(size_t InstrNumber) const;
-
-  /// Return the number of an instruction or a negative value if no number
-  /// was assigned to this instruction.
-  int64_t getInstrNumber(InstrConstIterator IT) const;
+  const Instruction *getInstr(size_t InstrNumber) const;
 
   /// Return the number of an instruction or a negative value if no number
   /// was assigned to this instruction.
   int64_t getInstrNumber(const Instruction *I) const;
 };
-
-/// Get the allocation corrsponding to th value \p V. It can look through
-/// tensorview instructions. \returns found allocation or nullptr.
-Value *getAllocationOrigin(Value *V);
-
-/// \returns peels off the layers of tensorviews from a value \p V.
-Value *getOrigin(Value *V);
 
 } // namespace glow
 

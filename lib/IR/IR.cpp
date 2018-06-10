@@ -167,12 +167,10 @@ InstrIterator IRFunction::removeInstruction(glow::Instruction *I) {
 
 void IRFunction::insertInstruction(glow::Instruction *I) {
   instrs_.push_back(I);
-  I->setParent(this);
 }
 
 InstrIterator IRFunction::insertInstruction(glow::Instruction *where,
                                             glow::Instruction *I) {
-  I->setParent(this);
   return instrs_.insert(where->getIterator(), I);
 }
 
@@ -190,8 +188,10 @@ void IRFunction::clear() {
 
   // Delete all of the instructions, in reverse order, to make sure that
   // we delete the users before the instructions.
-  for (auto it = instrs_.rbegin(), e = instrs_.rend(); it != e; ++it) {
-    Instruction::destroyInstruction(&*it);
+  for (auto it = instrs_.rbegin(), e = instrs_.rend(); it != e;) {
+    auto *curI = &*it;
+    ++it;
+    Instruction::destroyInstruction(curI);
   }
 
   // Delete all of the weights.
@@ -252,8 +252,7 @@ static void LLVM_ATTRIBUTE_UNUSED verifyOperandsAccess(const Instruction *I) {
 static void verifyLiveness(const IRFunction &M) {
   // The live set stores allocations that are known to be live.
   std::unordered_map<const Value *, bool> liveBuffers;
-  for (auto &Instr : M.getInstrs()) {
-    auto *I = &Instr;
+  for (auto *I : ForElementPtrIterator(M.getInstrs())) {
     if (auto *AI = dyn_cast<AllocActivationInst>(I)) {
       assert(liveBuffers.find(AI) == liveBuffers.end() &&
              "Redefinition of an existing allocation");
@@ -292,10 +291,10 @@ static void verifyLiveness(const IRFunction &M) {
 void IRFunction::verify() const {
   InstructionNumbering InstrNumbering(*this);
   assert(!instrs_.empty() && "Instruction list is empty!");
-  for (auto &it : instrs_) {
-    it.verifyUseList(InstrNumbering);
-    verifyOperandsAccess(&it);
-    it.verify();
+  for (const auto *I : ForElementPtrIterator(instrs_)) {
+    I->verifyUseList(InstrNumbering);
+    verifyOperandsAccess(I);
+    I->verify();
   }
 
   verifyLiveness(*this);
@@ -343,9 +342,10 @@ bool Instruction::isDataParallel() const {
 InstructionNumbering::InstructionNumbering(const IRFunction &M) {
   auto &instrs = M.getInstrs();
   size_t instIdx = 0;
-  for (auto it = instrs.begin(), e = instrs.end(); it != e; ++instIdx, ++it) {
-    numToInstr_.push_back(it);
-    instrToNum_[&*it] = instIdx;
+  for (auto *I : ForElementPtrIterator(instrs)) {
+    numToInstr_.push_back(I);
+    instrToNum_[I] = instIdx;
+    ++instIdx;
   }
 }
 
@@ -356,11 +356,7 @@ int64_t InstructionNumbering::getInstrNumber(const Instruction *I) const {
   return (int64_t)Result->second;
 }
 
-int64_t InstructionNumbering::getInstrNumber(InstrConstIterator IT) const {
-  return getInstrNumber(&*IT);
-}
-
-InstrConstIterator InstructionNumbering::getInstr(size_t instrNumber) const {
+const Instruction *InstructionNumbering::getInstr(size_t instrNumber) const {
   assert(instrNumber < numToInstr_.size());
   return numToInstr_[instrNumber];
 }
@@ -504,8 +500,8 @@ void IRFunction::nameInstructions() {
   for (auto &v : weights_) {
     nameInstr(usedNames, v, v->getKindName());
   }
-  for (auto &v : instrs_) {
-    nameInstr(usedNames, &v, v.getKindName());
+  for (auto *I : ForElementPtrIterator(instrs_)) {
+    nameInstr(usedNames, I, I->getKindName());
   }
 }
 
@@ -539,8 +535,7 @@ void IRFunction::dump(llvm::raw_ostream &OS) {
   sb << "code {\n";
 
   // Print all of the instructions:
-  for (auto &it : instrs_) {
-    Instruction *II = &it;
+  for (auto *II : ForElementPtrIterator(instrs_)) {
     sb << "  ";
     auto InstrNum = InstrNumbering.getInstrNumber(II);
     assert(InstrNum >= 0);
@@ -639,8 +634,7 @@ void IRFunction::dumpDAG(const char *dotFilename) {
   stream << "subgraph cluster_1 {";
   stream << "  style=invis;\n";
 
-  for (auto &Instr : instrs_) {
-    auto *I = &Instr;
+  for (auto *I : ForElementPtrIterator(instrs_)) {
     std::string desc = getDottyDesc(I);
 
     stream << '"' << I << "\"[\n";
@@ -668,8 +662,7 @@ void IRFunction::dumpDAG(const char *dotFilename) {
   stream << "  style=invis;\n";
 
   // Dump the use-def edges.
-  for (auto &Instr : instrs_) {
-    auto *I = &Instr;
+  for (auto *I : ForElementPtrIterator(instrs_)) {
     for (int i = 0, e = I->getNumOperands(); i < e; i++) {
       auto op = I->getOperand(i);
       stream << '"' << I << "\":f" << i << "->\"" << op.first
@@ -682,11 +675,11 @@ void IRFunction::dumpDAG(const char *dotFilename) {
 
   // Dump the order edges.
   Instruction *prev = nullptr;
-  for (auto &I : instrs_) {
+  for (auto *I : ForElementPtrIterator(instrs_)) {
     if (prev) {
-      stream << '"' << prev << "\"->\"" << &I << "\"[color=\"blue\"];\n";
+      stream << '"' << prev << "\"->\"" << I << "\"[color=\"blue\"];\n";
     }
-    prev = &I;
+    prev = I;
   }
   stream << "}";
   stream << "}";
@@ -710,9 +703,7 @@ IRFunction *llvm::ilist_traits<Instruction>::getContainingFunction() {
 }
 
 void llvm::ilist_traits<Instruction>::addNodeToList(Instruction *I) {
-  assert((I->getParent() == getContainingFunction() ||
-          I->getParent() == nullptr) &&
-         "Already in a list!");
+  assert(I->getParent() == nullptr && "Already in a list!");
   I->setParent(getContainingFunction());
 }
 
