@@ -378,10 +378,10 @@ void LLVMIRGen::generateDebugInfo() {
     emitDebugGlobalVariableForValue(w);
   }
 
-  for (const auto *I : ForElementPtrIterator(F_->getInstrs())) {
-    if (!isa<AllocActivationInst>(I) && !isa<TensorViewInst>(I))
+  for (const auto &I : F_->getInstrs()) {
+    if (!isa<AllocActivationInst>(&I) && !isa<TensorViewInst>(&I))
       continue;
-    emitDebugGlobalVariableForValue(I);
+    emitDebugGlobalVariableForValue(&I);
   }
 
   // Finalize the debug info.

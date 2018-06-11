@@ -126,7 +126,9 @@ private:
   Instruction(const Instruction &I) = delete;
   Instruction &operator=(const Instruction &I) = delete;
 
-  /// Destroy an instruction.
+  /// Destroy an instruction and deallocate its memory. This function is
+  /// automatically invoked when the instruction is being deleted from the list
+  /// of instructions.
   static void destroyInstruction(Instruction *I);
 
 public:
@@ -219,7 +221,7 @@ protected:
 namespace llvm {
 
 template <>
-struct llvm::ilist_traits<glow::Instruction>
+struct ilist_traits<glow::Instruction>
     : public ilist_default_traits<glow::Instruction> {
   using Instruction = glow::Instruction;
 
@@ -327,8 +329,8 @@ public:
   /// \returns the list of instructions.
   const InstListTy &getInstrs() const { return instrs_; }
 
-  /// getSublistAccess() - returns pointer to member of instruction list
-  static InstListTy IRFunction::*getSublistAccess() {
+  /// \returns pointer to the class member for the instruction list.
+  static InstListTy IRFunction::*getInstrsMemberPtr() {
     return &IRFunction::instrs_;
   }
 

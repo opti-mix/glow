@@ -38,8 +38,8 @@ void IRBuilder::deallocateActiveInstrs() {
   auto &instrs = F_->getInstrs();
   // Inserts dealloc instructions for all instructions that don't have
   // 'dealloc' as one of their users.
-  for (auto *I : ForElementPtrIterator(instrs)) {
-    auto AA = dyn_cast<AllocActivationInst>(I);
+  for (auto &I : instrs) {
+    auto AA = dyn_cast<AllocActivationInst>(&I);
     if (!AA) {
       continue;
     }

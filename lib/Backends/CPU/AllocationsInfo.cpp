@@ -105,16 +105,16 @@ void AllocationsInfo::allocateActivations(IRFunction *F) {
   llvm::DenseMap<const Value *, size_t> activationAddr;
 
   // Assign device-space addresses to the activations.
-  for (const auto *I : ForElementPtrIterator(F->getInstrs())) {
-    if (auto *A = dyn_cast<AllocActivationInst>(I)) {
-      auto numBytes = I->getSizeInBytes();
+  for (const auto &I : F->getInstrs()) {
+    if (auto *A = dyn_cast<AllocActivationInst>(&I)) {
+      auto numBytes = I.getSizeInBytes();
       size_t addr = activationsAllocator.allocate(numBytes);
       assert(!activationAddr.count(A) && "Allocation already made!");
       activationAddr[A] = addr;
       continue;
     }
 
-    if (auto *D = dyn_cast<DeallocActivationInst>(I)) {
+    if (auto *D = dyn_cast<DeallocActivationInst>(&I)) {
       auto *A = D->getAlloc();
       assert(activationAddr.count(A) && "Invalid deallocation!");
       activationsAllocator.deallocate(activationAddr[A]);
@@ -140,8 +140,8 @@ void AllocationsInfo::allocateActivations(IRFunction *F) {
 }
 
 void AllocationsInfo::allocateTensorViews(IRFunction *F) {
-  for (const auto *I : ForElementPtrIterator(F->getInstrs())) {
-    if (auto *A = dyn_cast<TensorViewInst>(I)) {
+  for (const auto &I : F->getInstrs()) {
+    if (const auto *A = dyn_cast<TensorViewInst>(&I)) {
       auto *viewOrigin = getOrigin(A);
       assert(allocatedAddressed_.count(viewOrigin) &&
              "Did not find original WeightVar or AllocActivation for a "
@@ -177,12 +177,12 @@ void AllocationsInfo::numberValues(IRFunction *F) {
     valueNumbers_[w] = std::make_pair(kind, valueIdx++);
   }
   // Assign numbers to all activations and tensorviews.
-  for (const auto *I : ForElementPtrIterator(F->getInstrs())) {
-    if (auto *A = dyn_cast<AllocActivationInst>(I)) {
+  for (const auto &I : F->getInstrs()) {
+    if (auto *A = dyn_cast<AllocActivationInst>(&I)) {
       valueNumbers_[A] = std::make_pair(ValueKind::Activation, valueIdx++);
       continue;
     }
-    if (auto *A = dyn_cast<TensorViewInst>(I)) {
+    if (auto *A = dyn_cast<TensorViewInst>(&I)) {
       auto *viewOrigin = getOrigin(A);
       auto kind = ValueKind::Activation;
       if (auto *w = dyn_cast<WeightVar>(viewOrigin)) {

@@ -252,14 +252,14 @@ static void LLVM_ATTRIBUTE_UNUSED verifyOperandsAccess(const Instruction *I) {
 static void verifyLiveness(const IRFunction &M) {
   // The live set stores allocations that are known to be live.
   std::unordered_map<const Value *, bool> liveBuffers;
-  for (const auto *I : ForElementPtrIterator(M.getInstrs())) {
-    if (auto *AI = dyn_cast<AllocActivationInst>(I)) {
+  for (const auto &I : M.getInstrs()) {
+    if (auto *AI = dyn_cast<AllocActivationInst>(&I)) {
       assert(liveBuffers.find(AI) == liveBuffers.end() &&
              "Redefinition of an existing allocation");
       liveBuffers.insert({AI, false});
       continue;
     }
-    if (auto *DI = dyn_cast<DeallocActivationInst>(I)) {
+    if (auto *DI = dyn_cast<DeallocActivationInst>(&I)) {
       assert(llvm::isa<AllocActivationInst>(DI->getSrc()) &&
              "Only allocations can be deallocated");
       assert(liveBuffers.find(DI->getSrc()) != liveBuffers.end() &&
@@ -269,10 +269,10 @@ static void verifyLiveness(const IRFunction &M) {
     }
     // Do not consider tensorview definitions to be real uses of any
     // allocations.
-    if (llvm::isa<TensorViewInst>(I))
+    if (llvm::isa<TensorViewInst>(&I))
       continue;
 
-    for (const auto &Op : I->getOperands()) {
+    for (const auto &Op : I.getOperands()) {
       if (auto *AI = dyn_cast<AllocActivationInst>(getOrigin(Op.first))) {
         auto entry = liveBuffers.find(AI);
         assert(entry != liveBuffers.end() &&
@@ -291,10 +291,10 @@ static void verifyLiveness(const IRFunction &M) {
 void IRFunction::verify() const {
   InstructionNumbering InstrNumbering(*this);
   assert(!instrs_.empty() && "Instruction list is empty!");
-  for (const auto *I : ForElementPtrIterator(instrs_)) {
-    I->verifyUseList(InstrNumbering);
-    verifyOperandsAccess(I);
-    I->verify();
+  for (const auto &I : instrs_) {
+    I.verifyUseList(InstrNumbering);
+    verifyOperandsAccess(&I);
+    I.verify();
   }
 
   verifyLiveness(*this);
@@ -342,9 +342,9 @@ bool Instruction::isDataParallel() const {
 InstructionNumbering::InstructionNumbering(const IRFunction &M) {
   auto &instrs = M.getInstrs();
   size_t instIdx = 0;
-  for (const auto *I : ForElementPtrIterator(instrs)) {
-    numToInstr_.push_back(I);
-    instrToNum_[I] = instIdx;
+  for (const auto &I : instrs) {
+    numToInstr_.push_back(&I);
+    instrToNum_[&I] = instIdx;
     ++instIdx;
   }
 }
@@ -500,8 +500,8 @@ void IRFunction::nameInstructions() {
   for (auto &v : weights_) {
     nameInstr(usedNames, v, v->getKindName());
   }
-  for (auto *I : ForElementPtrIterator(instrs_)) {
-    nameInstr(usedNames, I, I->getKindName());
+  for (auto &I : instrs_) {
+    nameInstr(usedNames, &I, I.getKindName());
   }
 }
 
@@ -535,23 +535,23 @@ void IRFunction::dump(llvm::raw_ostream &OS) {
   sb << "code {\n";
 
   // Print all of the instructions:
-  for (const auto *II : ForElementPtrIterator(instrs_)) {
+  for (const auto &I : instrs_) {
     sb << "  ";
-    auto InstrNum = InstrNumbering.getInstrNumber(II);
+    auto InstrNum = InstrNumbering.getInstrNumber(&I);
     assert(InstrNum >= 0);
     sb << InstrNum << " ";
-    dumpIR(II, sb);
-    if (isa<AllocActivationInst>(II))
-      sb << " // size: " << II->getSizeInBytes();
-    if (isa<DeallocActivationInst>(II)) {
+    dumpIR(&I, sb);
+    if (isa<AllocActivationInst>(&I))
+      sb << " // size: " << I.getSizeInBytes();
+    if (isa<DeallocActivationInst>(&I)) {
       sb << " // size: "
-         << cast<DeallocActivationInst>(II)
+         << cast<DeallocActivationInst>(&I)
                 ->getSrc()
                 ->getType()
                 ->getSizeInBytes();
     }
-    if (hasResultValue(II))
-      dumpUsers(II, sb, InstrNumbering);
+    if (hasResultValue(&I))
+      dumpUsers(&I, sb, InstrNumbering);
     sb << "\n";
   }
 
@@ -634,10 +634,10 @@ void IRFunction::dumpDAG(const char *dotFilename) {
   stream << "subgraph cluster_1 {";
   stream << "  style=invis;\n";
 
-  for (const auto *I : ForElementPtrIterator(instrs_)) {
-    std::string desc = getDottyDesc(I);
+  for (const auto &I : instrs_) {
+    std::string desc = getDottyDesc(&I);
 
-    stream << '"' << I << "\"[\n";
+    stream << '"' << &I << "\"[\n";
     std::string repr = quote(desc);
     stream << "\tlabel = " << repr << "\n";
     stream << "\tshape = \"record\"\n";
@@ -662,24 +662,24 @@ void IRFunction::dumpDAG(const char *dotFilename) {
   stream << "  style=invis;\n";
 
   // Dump the use-def edges.
-  for (const auto *I : ForElementPtrIterator(instrs_)) {
-    for (int i = 0, e = I->getNumOperands(); i < e; i++) {
-      auto op = I->getOperand(i);
-      stream << '"' << I << "\":f" << i << "->\"" << op.first
+  for (const auto &I : instrs_) {
+    for (int i = 0, e = I.getNumOperands(); i < e; i++) {
+      auto op = I.getOperand(i);
+      stream << '"' << &I << "\":f" << i << "->\"" << op.first
              << "\"[dir=" << getDottyArrowForCC(op.second) << "];\n";
     }
-    if (I->hasPredicate()) {
-      stream << '"' << I->getPredicate() << "\"->\"" << I << "\":n;\n";
+    if (I.hasPredicate()) {
+      stream << '"' << I.getPredicate() << "\"->\"" << &I << "\":n;\n";
     }
   }
 
   // Dump the order edges.
   const Instruction *prev = nullptr;
-  for (const auto *I : ForElementPtrIterator(instrs_)) {
+  for (const auto &I : instrs_) {
     if (prev) {
-      stream << '"' << prev << "\"->\"" << I << "\"[color=\"blue\"];\n";
+      stream << '"' << prev << "\"->\"" << &I << "\"[color=\"blue\"];\n";
     }
-    prev = I;
+    prev = &I;
   }
   stream << "}";
   stream << "}";
@@ -696,7 +696,7 @@ void IRFunction::dumpDAG(const char *dotFilename) {
 // reconstruct the IRFunction from the 'self' pointer of the trait.
 IRFunction *llvm::ilist_traits<Instruction>::getContainingFunction() {
   size_t Offset(
-      size_t(&((IRFunction *)nullptr->*IRFunction::getSublistAccess())));
+      size_t(&((IRFunction *)nullptr->*IRFunction::getInstrsMemberPtr())));
   iplist<Instruction> *Anchor(static_cast<iplist<Instruction> *>(this));
   return reinterpret_cast<IRFunction *>(reinterpret_cast<char *>(Anchor) -
                                         Offset);

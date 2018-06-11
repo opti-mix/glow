@@ -107,9 +107,9 @@ public:
     auto &instrs = M.getInstrs();
     size_t instIdx = 0;
     numToInstr_.reserve(instrs.size());
-    for (auto *I : ForElementPtrIterator(instrs)) {
-      numToInstr_.push_back(I);
-      instrToNum_[I] = instIdx;
+    for (auto &I : instrs) {
+      numToInstr_.push_back(&I);
+      instrToNum_[&I] = instIdx;
       instIdx += MAX_SLOT;
     }
   }
@@ -185,26 +185,26 @@ static void hoistDealloc(IRFunction &M) {
   auto &instrs = M.getInstrs();
 
   // Record the last use of each dealloc.
-  for (auto *I : ForElementPtrIterator(instrs)) {
-    if (isa<DeallocActivationInst>(I)) {
+  for (auto &I : instrs) {
+    if (isa<DeallocActivationInst>(&I)) {
       // Collect dealloc instructions.
-      deallocs.insert(I);
+      deallocs.insert(&I);
       continue;
     }
 
-    if (auto alloc = dyn_cast<AllocActivationInst>(I)) {
-      lastUser[alloc] = I;
+    if (auto alloc = dyn_cast<AllocActivationInst>(&I)) {
+      lastUser[alloc] = &I;
       continue;
     }
 
-    for (int i = 0, e = I->getNumOperands(); i < e; i++) {
-      auto op = I->getOperand(i).first;
+    for (int i = 0, e = I.getNumOperands(); i < e; i++) {
+      auto op = I.getOperand(i).first;
       // Consider any use of a tensor_view to be also a use
       // of its source tensor. This is required to make
       // sure that a lifetime of a tensor_view is always
       // enclosed inside the lifetime of its source tensor.
       if (auto *alloc = getAllocationOrigin(op)) {
-        lastUser[alloc] = I;
+        lastUser[alloc] = &I;
         continue;
       }
     }
@@ -254,9 +254,9 @@ static void sinkAllocas(IRFunction &M) {
   }
 
   // Place all of the allocas in the right place:
-  for (auto *I : ForElementPtrIterator(instrs)) {
-    for (int i = 0, e = I->getNumOperands(); i < e; i++) {
-      auto op = I->getOperand(i).first;
+  for (auto &I : instrs) {
+    for (int i = 0, e = I.getNumOperands(); i < e; i++) {
+      auto op = I.getOperand(i).first;
       auto aa = dyn_cast<AllocActivationInst>(getOrigin(op));
       if (!aa) {
         continue;
@@ -266,7 +266,7 @@ static void sinkAllocas(IRFunction &M) {
         continue;
       }
       allocs.erase(A);
-      M.insertInstruction(I, aa);
+      M.insertInstruction(&I, aa);
       if (allocs.empty())
         return;
     }
@@ -341,9 +341,9 @@ static void deleteDeadAllocs(IRFunction &M) {
   llvm::SmallVector<Instruction *, 16> erasedInstructions{};
 
   // Remove all unused tensorviews.
-  for (auto *I : ForElementPtrIterator(instrs)) {
-    if (isa<TensorViewInst>(I) && I->getNumUsers() == 0) {
-      erasedInstructions.push_back(I);
+  for (auto &I : instrs) {
+    if (isa<TensorViewInst>(I) && I.getNumUsers() == 0) {
+      erasedInstructions.push_back(&I);
     }
   }
 
@@ -354,10 +354,10 @@ static void deleteDeadAllocs(IRFunction &M) {
   erasedInstructions.clear();
 
   // Remove all of the DeallocActivationInst that close unused allocs.
-  for (auto *I : ForElementPtrIterator(instrs)) {
-    const auto *DA = dyn_cast<const DeallocActivationInst>(I);
+  for (auto &I : instrs) {
+    const auto *DA = dyn_cast<const DeallocActivationInst>(&I);
     if (DA && DA->getAlloc()->getNumUsers() < 2) {
-      erasedInstructions.push_back(I);
+      erasedInstructions.push_back(&I);
     }
   }
 
@@ -367,9 +367,9 @@ static void deleteDeadAllocs(IRFunction &M) {
   erasedInstructions.clear();
 
   // Remove the unused allocs.
-  for (auto *I : ForElementPtrIterator(instrs)) {
-    if (isa<AllocActivationInst>(I) && I->getNumUsers() < 2) {
-      erasedInstructions.push_back(I);
+  for (auto &I : instrs) {
+    if (isa<AllocActivationInst>(&I) && I.getNumUsers() < 2) {
+      erasedInstructions.push_back(&I);
     }
   }
 
@@ -1212,9 +1212,9 @@ void optimizeInserts(IRFunction &M) {
   InstructionPtrSet erasedInstructions;
   IRBuilder B(&M);
 
-  for (auto *I : ForElementPtrIterator(instrs)) {
+  for (auto &I : instrs) {
     // Look for compatible InsertTensors.
-    auto *ITI = dyn_cast<InsertTensorInst>(I);
+    auto *ITI = dyn_cast<InsertTensorInst>(&I);
     if (!ITI) {
       continue;
     }
@@ -1283,7 +1283,7 @@ void optimizeInserts(IRFunction &M) {
     replaceAllNonDeallocUsersWith(insertSourceAAI, TVI);
 
     // Move the TVI to the location of the InsertTensor.
-    auto itTVI = M.moveInstruction(I, TVI);
+    auto itTVI = M.moveInstruction(&I, TVI);
 
     // Move the original writer into insertSourceAAI to now come after the TVI,
     // preserving the order of writes into insertDestAAI.
@@ -1305,9 +1305,9 @@ void optimizeExtracts(IRFunction &M) {
   InstructionPtrSet erasedInstructions;
   IRBuilder B(&M);
 
-  for (auto *I : ForElementPtrIterator(instrs)) {
+  for (auto &I : instrs) {
     // Look for compatible ExtractTensors.
-    auto *ETI = dyn_cast<ExtractTensorInst>(I);
+    auto *ETI = dyn_cast<ExtractTensorInst>(&I);
     if (!ETI) {
       continue;
     }
@@ -1351,7 +1351,7 @@ void optimizeExtracts(IRFunction &M) {
     replaceAllNonDeallocUsersWith(extractDestAAI, TVI);
 
     // Move the TVI to the location of the ExtractTensor.
-    M.moveInstruction(I, TVI);
+    M.moveInstruction(&I, TVI);
 
     // Queue up removal of the now-unnecessary ExtractTensor. Unused
     // allocs/deallocs will be deleted by later passes.

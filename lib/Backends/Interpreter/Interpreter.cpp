@@ -156,13 +156,13 @@ void Interpreter::doForwardPass() {
 #define DEF_VALUE(CLASS, NAME)
 #define DEF_INSTR(CLASS, NAME)                                                 \
   case Kinded::Kind::CLASS##Kind: {                                            \
-    fwd##CLASS(llvm::cast<CLASS>(I));                                          \
+    fwd##CLASS(llvm::cast<CLASS>(&I));                                         \
     break;                                                                     \
   }
 #define DEF_BACKEND_SPECIFIC_INSTR(CLASS, NAME)
   // Dispatch the interpreter on each instruction in the program:
-  for (const auto *I : ForElementPtrIterator(F_->getInstrs())) {
-    switch (I->getKind()) {
+  for (const auto &I : F_->getInstrs()) {
+    switch (I.getKind()) {
 #include "AutoGenInstr.def"
 
     default:
