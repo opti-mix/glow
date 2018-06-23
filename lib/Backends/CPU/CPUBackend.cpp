@@ -40,6 +40,8 @@ using llvm::isa;
 
 static llvm::cl::opt<std::string> target("target", llvm::cl::desc("target"));
 
+Backend *glow::createCPUBackend(IRFunction *F) { return new CPUBackend(F); }
+
 CPUBackend::CPUBackend(IRFunction *F)
     : F_(F), irgen_(F_, allocationsInfo_, "") {}
 

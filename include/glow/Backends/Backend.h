@@ -87,6 +87,20 @@ public:
 /// Create a backend of kind \p kind, to run the IR function \p M.
 Backend *createBackend(BackendKind backendKind, IRFunction *M);
 
+/// Create a new instance of the interpreter backend.
+Backend *createInterpreter(IRFunction *F);
+
+/// NOTE: Please add a declaration of a backend-specific `create` method here
+/// when you define a new backend.
+#if defined(GLOW_WITH_CPU)
+/// Create a new instance of the CPUBackend backend.
+Backend *createCPUBackend(IRFunction *F);
+#endif
+#if defined(GLOW_WITH_OPENCL)
+/// Create a new instance of the OpenCL backend.
+Backend *createOCLBackend(IRFunction *F);
+#endif
+
 } // namespace glow
 
 #endif // GLOW_BACKENDS_BACKEND_H

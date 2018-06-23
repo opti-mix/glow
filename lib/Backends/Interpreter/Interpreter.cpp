@@ -170,3 +170,5 @@ void Interpreter::doForwardPass() {
     }
   }
 }
+
+Backend *glow::createInterpreter(IRFunction *F) { return new Interpreter(F); }

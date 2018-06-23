@@ -14,14 +14,6 @@
  * limitations under the License.
  */
 
-#include "Interpreter/Interpreter.h"
-#if defined(GLOW_WITH_CPU)
-#include "CPU/CPUBackend.h"
-#endif
-#if defined(GLOW_WITH_OPENCL)
-#include "OpenCL/OpenCL.h"
-#endif
-
 #include "glow/Backends/Backend.h"
 #include "glow/Graph/Graph.h"
 #include "glow/Graph/Nodes.h"
