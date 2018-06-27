@@ -650,7 +650,7 @@ ConcatNode *Function::createConcat(llvm::StringRef name,
   }
 
   auto NT = getParent()->uniqueTypeWithNewShape(inputs[0]->getType(), shape);
-  std::vector<NodeValue> ops;
+  std::vector<NodeValueHolder> ops;
   ops.reserve(inputs.size());
   for (auto I : inputs) {
     ops.emplace_back(I);
@@ -661,7 +661,7 @@ ConcatNode *Function::createConcat(llvm::StringRef name,
 ConcatNode *Function::createConcat(llvm::StringRef name,
                                    llvm::ArrayRef<NodeValue> inputs,
                                    unsigned dimension, TypeRef outTy) {
-  std::vector<NodeValue> ops;
+  std::vector<NodeValueHolder> ops;
   ops.reserve(inputs.size());
   for (auto I : inputs) {
     ops.emplace_back(I);
@@ -677,7 +677,7 @@ ConcatNode *Function::createTile(llvm::StringRef name, NodeValue input,
   assert(axis >= 0 && axis < input.dims().size() &&
          "Axis must fall in range of source dims.");
 
-  std::vector<NodeValue> ops;
+  std::vector<NodeValueHolder> ops;
   ops.reserve(tiles);
   for (size_t i = 0; i < tiles; i++) {
     ops.emplace_back(input);
@@ -1764,7 +1764,7 @@ Function *Function::clone(llvm::StringRef newName,
   for (auto &N : newF->getNodes()) {
     // Fix each one of the inputs of this node.
     for (unsigned inp = 0, e = N.getNumInputs(); inp < e; inp++) {
-      NodeValue &input = N.getNthInput(inp);
+      NodeValueHolder &input = N.getNthInput(inp);
 
       auto it = currToNew.find(input.getNode());
       if (it == currToNew.end()) {

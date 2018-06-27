@@ -21,7 +21,7 @@
 
 using namespace glow;
 
-void NodeUse::setOperand(NodeValue &other) {
+void NodeUse::setOperand(NodeValueHolder &other) {
   if (other && site_->getNode()) {
     assert(site_->getType() == other.getType() &&
            "Setting operand to a node with a different type");
@@ -32,28 +32,38 @@ void NodeUse::setOperand(NodeValue &other) {
 NodeValue::NodeValue(Node *N) {
   assert((!N || (N->getNumResults() == 1)) &&
          "Constructing a value for a multi-res node");
-  setOperand(N, 0);
+  // setOperand(N, 0);
+  node_ = N;
+  resNo_ = 0;
 }
+
+NodeValueHolder::NodeValueHolder(Node *N) : v_(N) { setOperand(N, 0); }
 
 NodeValue::NodeValue(Node *N, unsigned resNo) {
   assert(resNo < N->getNumResults() && "Invalid result number");
+  // setOperand(N, resNo);
+  node_ = N;
+  resNo_ = resNo;
+}
+
+NodeValueHolder::NodeValueHolder(Node *N, unsigned resNo) : v_(N, resNo) {
   setOperand(N, resNo);
 }
 
-void NodeValue::setOperand(Node *v, unsigned resNo) {
-  if (node_ == v && resNo == resNo_) {
+void NodeValueHolder::setOperand(Node *v, unsigned resNo) {
+  if (v_.node_ == v && resNo == v_.resNo_) {
     return;
   }
 
-  if (node_) {
-    node_->removeUse(NodeUse(this));
-    node_ = nullptr;
-    resNo_ = 0;
+  if (v_.node_) {
+    v_.node_->removeUse(NodeUse(this));
+    v_.node_ = nullptr;
+    v_.resNo_ = 0;
   }
 
   if (v) {
-    node_ = v;
-    resNo_ = resNo;
+    v_.node_ = v;
+    v_.resNo_ = resNo;
     v->addUse(NodeUse(this));
   }
 }
@@ -65,7 +75,7 @@ void NodeValue::replaceAllUsesOfWith(NodeValue v) {
   auto &users = node_->getUsers();
   llvm::SmallVector<NodeUse, 4> usersVec(users.begin(), users.end());
   for (auto &U : usersVec) {
-    NodeValue *site = U.get();
+    NodeValueHolder *site = U.get();
     assert(site->getNode() == node_ && "Invalid user");
     if (site->getResNo() == getResNo()) {
       site->setOperand(v.getNode(), v.getResNo());
@@ -73,7 +83,22 @@ void NodeValue::replaceAllUsesOfWith(NodeValue v) {
   }
 }
 
-const NodeValue &Node::getPredicate() const { return predicate_; }
+void NodeValueHolder::replaceAllUsesOfWith(NodeValue v) {
+  if (v.getNode()) {
+    assert(getType() == v.getType() && "Replacing value with the wrong type");
+  }
+  auto &users = v_.node_->getUsers();
+  llvm::SmallVector<NodeUse, 4> usersVec(users.begin(), users.end());
+  for (auto &U : usersVec) {
+    NodeValueHolder *site = U.get();
+    assert(site->getNode() == v_.node_ && "Invalid user");
+    if (site->getResNo() == getResNo()) {
+      site->setOperand(v.getNode(), v.getResNo());
+    }
+  }
+}
+
+const NodeValueHolder &Node::getPredicate() const { return predicate_; }
 
 void Node::setPredicate(const NodeValue &P) { predicate_ = P; }
 
@@ -165,10 +190,13 @@ void Node::visit(Node *parent, NodeWalker *visitor) {
 }
 
 TypeRef NodeValue::getType() const { return node_->getType(resNo_); }
+TypeRef NodeValueHolder::getType() const { return v_.getType(); }
 
 ElemKind NodeValue::getElementType() const {
   return getType()->getElementType();
 }
+
+ElemKind NodeValueHolder::getElementType() const { return v_.getElementType(); }
 
 void UnownedNodeValueMap::insert(NodeValue from, NodeValue to) {
   entries_.push_front(
@@ -201,6 +229,9 @@ bool UnownedNodeValueMap::count(NodeValue from) {
 }
 
 llvm::ArrayRef<size_t> NodeValue::dims() const { return getType()->dims(); }
+llvm::ArrayRef<size_t> NodeValueHolder::dims() const {
+  return v_.getType()->dims();
+}
 
 //===----------------------------------------------------------------------===//
 //                     Debug description methods
@@ -226,7 +257,7 @@ llvm::StringRef Node::getInputName(unsigned idx) const {
     llvm_unreachable("Unhandled node");
   }
 }
-NodeValue &Node::getNthInput(unsigned idx) {
+NodeValueHolder &Node::getNthInput(unsigned idx) {
   switch (getKind()) {
 #define DEF_NODE(CLASS, NAME)                                                  \
   case glow::Kinded::Kind::CLASS##Kind:                                        \
@@ -237,7 +268,7 @@ NodeValue &Node::getNthInput(unsigned idx) {
   }
 }
 
-const NodeValue &Node::getNthInput(unsigned idx) const {
+const NodeValueHolder &Node::getNthInput(unsigned idx) const {
   switch (getKind()) {
 #define DEF_NODE(CLASS, NAME)                                                  \
   case glow::Kinded::Kind::CLASS##Kind:                                        \
@@ -353,7 +384,7 @@ void Node::verify() const {
 
   // Verify the predicate field.
   if (hasPredicate()) {
-    auto pred = getPredicate();
+    auto &pred = getPredicate();
     assert(pred.getNode() && "Invalid predicate");
     auto Ty = pred.getType();
     (void)Ty;
@@ -368,5 +399,95 @@ void Node::verify() const {
 #include "AutoGenNodes.def"
   default:
     llvm_unreachable("Unhandled node");
+  }
+}
+
+#include <cstdio>
+#include <cstdlib>
+#include <cxxabi.h>
+#include <libunwind.h>
+#include <regex>
+
+inline std::string format(const char *fmt, ...) {
+  int size = 2048;
+  char *buffer = 0;
+  buffer = new char[size];
+  va_list vl;
+  va_start(vl, fmt);
+  int nsize = vsnprintf(buffer, size, fmt, vl);
+  if (size <= nsize) { // fail delete buffer and try again
+    delete[] buffer;
+    buffer = 0;
+    buffer = new char[nsize + 1]; //+1 for /0
+    nsize = vsnprintf(buffer, size, fmt, vl);
+  }
+  std::string ret(buffer);
+  va_end(vl);
+  delete[] buffer;
+  return ret;
+}
+
+/// A regex that matches Node constructors.
+std::regex nodeConsRegex("(|\\s+)([A-Za-z0-9_]+Node)::\\2\\(");
+
+/// Print backtraces if they are not containing any whitelisted functions.
+void backtrace() {
+  unw_cursor_t cursor;
+  unw_context_t context;
+
+  // Initialize cursor to current frame for local unwinding.
+  unw_getcontext(&context);
+  unw_init_local(&cursor, &context);
+
+  // Unwind frames one by one, going up the frame stack.
+  std::string output;
+  while (unw_step(&cursor) > 0) {
+    unw_word_t offset, pc;
+    unw_get_reg(&cursor, UNW_REG_IP, &pc);
+    if (pc == 0) {
+      break;
+    }
+    output += format("0x%llx:", pc);
+
+    char sym[256];
+    if (unw_get_proc_name(&cursor, sym, sizeof(sym), &offset) == 0) {
+      char *nameptr = sym;
+      int status;
+      char *demangled = abi::__cxa_demangle(sym, nullptr, nullptr, &status);
+      if (status == 0) {
+        nameptr = demangled;
+      }
+      output += format(" (%s+0x%llx)\n", nameptr, offset);
+      std::free(demangled);
+    } else {
+      std::printf(" -- error: unable to obtain symbol name for this frame\n");
+    }
+  }
+  // No need to print anything, if the callstack contains one of the whitelisted
+  // functions.
+  if (output.find("Function::create") == std::string::npos &&
+      output.find("Instruction::Instruction") == std::string::npos &&
+      output.find("setPredicate") == std::string::npos &&
+      output.find("replaceAllUsesOfWith") == std::string::npos &&
+      output.find("Function::clone") == std::string::npos &&
+      output.find("replaceAllNonDeallocUsersWith") == std::string::npos &&
+      output.find("replaceAllUsesInsideIntervalWith") == std::string::npos) {
+
+    // Calls inside node constructors are fine.
+    std::smatch m;
+    if (std::regex_search(output, m, nodeConsRegex)) {
+
+#if 0
+      std::printf("Found constructor call:\n");
+      for (auto x:m) {
+        std::cout << x << " ";
+      }
+      std::printf("\n");
+#endif
+      return;
+    }
+
+    std::printf("%s", output.c_str());
+    std::printf("\n\n\n");
   }
 }

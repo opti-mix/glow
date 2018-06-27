@@ -93,7 +93,7 @@ void NodeBuilder::emitClassMembers(std::ostream &os) const {
     os << "  Mode mode_;\n";
   }
   for (const auto &op : nodeInputs_) {
-    os << "  NodeValue " << op << "_;\n";
+    os << "  NodeValueHolder " << op << "_;\n";
   }
   for (const auto &op : members_) {
     os << "  " << getStorageTypename(op.first) << " " << op.second << "_;\n";
@@ -111,8 +111,8 @@ void NodeBuilder::emitMemberGetter(std::ostream &os, MemberType type,
 void NodeBuilder::emitSettersGetters(std::ostream &os) const {
   // Print the getters/setters.
   for (const auto &inName : nodeInputs_) {
-    os << "  NodeValue get" << inName << "() const { return " << inName
-       << "_; }\n";
+    os << "  const NodeValueHolder &get" << inName << "() const { return "
+       << inName << "_; }\n";
   }
 
   unsigned idx = 0;
@@ -173,7 +173,7 @@ void NodeBuilder::emitEdges(std::ostream &os) const {
   }
   os << "  llvm_unreachable(\"Invalid index\");\n}\n";
 
-  os << "\nNodeValue &" << name_ << "Node::getNthInput(unsigned idx) {\n";
+  os << "\nNodeValueHolder &" << name_ << "Node::getNthInput(unsigned idx) {\n";
   for (size_t i = 0; i < nodeInputs_.size(); i++) {
     os << "  if (idx == " << i << ") { return " << nodeInputs_[i] << "_; }\n";
   }
@@ -381,7 +381,7 @@ void NodeBuilder::emitNodeClass(std::ostream &os) const {
 
   os << "  unsigned getNumInputs() const;\n"
      << "  llvm::StringRef getInputName(unsigned idx) const;\n"
-     << "  NodeValue &getNthInput(unsigned idx);\n"
+     << "  NodeValueHolder &getNthInput(unsigned idx);\n"
      << "  llvm::StringRef getOutputName(unsigned idx) const;\n"
      << "  bool hasSideEffects() const { return " << hasSideEffects_ << "; }\n"
      << "  std::string getDebugDesc() const;\n"

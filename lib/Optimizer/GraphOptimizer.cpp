@@ -376,8 +376,8 @@ static bool sinkCode(Function *F) {
       if (CN->getInputs().size() != 2) {
         continue;
       }
-      auto LInput = CN->getInputs()[0];
-      auto RInput = CN->getInputs()[1];
+      auto &LInput = CN->getInputs()[0];
+      auto &RInput = CN->getInputs()[1];
       auto *L = dyn_cast<ReluNode>(LInput);
       auto *R = dyn_cast<ReluNode>(RInput);
 
@@ -394,8 +394,8 @@ static bool sinkCode(Function *F) {
       if (CN->getInputs().size() != 2) {
         continue;
       }
-      auto LInput = CN->getInputs()[0];
-      auto RInput = CN->getInputs()[1];
+      auto &LInput = CN->getInputs()[0];
+      auto &RInput = CN->getInputs()[1];
       auto *L = dyn_cast<TransposeNode>(LInput);
       auto *R = dyn_cast<TransposeNode>(RInput);
 
@@ -517,7 +517,7 @@ static void mergeMatMul(Function *F) {
 
     // For each matmul that depends on the rhs matrix.
     for (auto &MM : MMs) {
-      auto L = MM->getLHS();
+      auto &L = MM->getLHS();
       // The operands to the matrix multiplier should not depend on one another
       // or else we won't be able to get rid of the original matrix
       // multiplication.
@@ -865,7 +865,7 @@ static NodeValue simplifyConcatNode(Function *F, ConcatNode *CN) {
     // Check if any of the inputs are ConcatNode.
     llvm::SmallVector<NodeValue, 16> newInputs;
     bool merged = false;
-    for (auto input : inputs) {
+    for (auto &input : inputs) {
       newInputs.push_back(input);
       auto *CNI = dyn_cast<ConcatNode>(input);
       // Bail if it is not a ConcatNode or it is a concat node with a diffrent
@@ -877,7 +877,9 @@ static NodeValue simplifyConcatNode(Function *F, ConcatNode *CN) {
       // Replace current input by its own inputs, i.e. merge them into the
       // parent concat node.
       newInputs.pop_back();
-      newInputs.append(CNI->getInputs().begin(), CNI->getInputs().end());
+      for (auto &input : CNI->getInputs()) {
+        newInputs.push_back(input);
+      }
     }
     if (merged) {
       // Return a new simplified Concat node.
@@ -900,7 +902,7 @@ static NodeValue simplifyConcatNode(Function *F, ConcatNode *CN) {
     // Check if the slices span the input value.
     bool found = findSlicesThatSpanInput(slices, CN->getDim(), order);
     if (found && order.size() == slices.size()) {
-      auto orig = order[0]->getInput();
+      auto &orig = order[0]->getInput();
       // The original value that we extract from must be of the same shape as
       // the concat.
       if (CN->getType() == orig.getType()) {

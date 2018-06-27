@@ -20,6 +20,8 @@
 
 #include <list>
 
+extern void backtrace();
+
 namespace glow {
 
 /// A UseDef is something that can be an operand for an instruction.
@@ -38,7 +40,10 @@ public:
     users_.erase(it);
   }
   /// Adds the use \p U.
-  void addUse(Use U) { users_.push_back(U); }
+  void addUse(Use U) {
+    backtrace();
+    users_.push_back(U);
+  }
 
   /// \returns True if the value has some users.
   bool hasUsers() const { return !users_.empty(); }

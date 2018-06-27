@@ -41,7 +41,7 @@ inline const char *getReturnTypename(MemberType type) {
                                "llvm::ArrayRef<float>",
                                "llvm::ArrayRef<unsigned>",
                                "llvm::ArrayRef<size_t>",
-                               "llvm::ArrayRef<NodeValue>",
+                               "llvm::ArrayRef<NodeValueHolder>",
                                nullptr};
   return returnTypes[(int)type];
 }
@@ -55,7 +55,7 @@ inline const char *getStorageTypename(MemberType type) {
                                 "std::vector<float>",
                                 "std::vector<unsigned>",
                                 "std::vector<size_t>",
-                                "std::vector<NodeValue>",
+                                "std::vector<NodeValueHolder>",
                                 nullptr};
   return storageTypes[(int)type];
 }

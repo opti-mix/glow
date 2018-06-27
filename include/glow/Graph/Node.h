@@ -41,6 +41,7 @@ class NodeWalker;
 /// from the use-list. This data structure is similar to LLVM's SDValue.
 struct NodeValue {
 private:
+  friend struct NodeValueHolder;
   /// A pointer to the node (owned by the graph).
   Node *node_{nullptr};
   /// Specifies the node result number to use.
@@ -54,20 +55,25 @@ public:
   NodeValue(Node *N, unsigned resNo);
 
   /// Create a new operand and register it as a new user to the node.
-  NodeValue(const NodeValue &that) { setOperand(that.getNode(), that.resNo_); }
+  // NodeValue(const NodeValue &that) { setOperand(that.getNode(), that.resNo_);
+  // }
+  NodeValue(const NodeValue &that) : node_(that.node_), resNo_{that.resNo_} {}
 
   /// Unregister old value, assign new NodeValue and register it.
   NodeValue &operator=(const NodeValue &that) {
-    setOperand(that.getNode(), that.resNo_);
+    node_ = that.node_;
+    resNo_ = that.resNo_;
     return *this;
   }
 
   /// When deleting an operand we need to unregister the operand from the
   /// use-list of the node it used to reference.
-  ~NodeValue() { setOperand(nullptr, 0); }
+  ~NodeValue() {
+    // setOperand(nullptr, 0);
+  }
   /// Sets the operand to point to \p N. This method registers the operand as a
   /// user of \p N.
-  void setOperand(Node *v, unsigned resNo);
+  // void setOperand(Node *v, unsigned resNo);
   /// Get the index which selects a specific result in the SDNode
   unsigned getResNo() const { return resNo_; }
   /// \returns the underlying pointer.
@@ -100,6 +106,71 @@ public:
   }
 };
 
+struct NodeValueHolder {
+private:
+  NodeValue v_;
+
+public:
+  /// Create a new value and register the node we reference.
+  /*implicit*/ NodeValueHolder(Node *N);
+
+  /// Create a new value for result \p resNo and register the node we reference.
+  NodeValueHolder(Node *N, unsigned resNo);
+
+  /// Create a new operand and register it as a new user to the node.
+  NodeValueHolder(const NodeValue &that) : v_(nullptr) {
+    setOperand(that.getNode(), that.getResNo());
+  }
+  NodeValueHolder(const NodeValueHolder &that) : v_(nullptr) {
+    setOperand(that.getNode(), that.getResNo());
+  }
+
+  /// Unregister old value, assign new NodeValue and register it.
+  NodeValueHolder &operator=(const NodeValueHolder &that) {
+    setOperand(that.getNode(), that.getResNo());
+    return *this;
+  }
+
+  NodeValueHolder &operator=(const NodeValue &that) {
+    setOperand(that.getNode(), that.getResNo());
+    // v_ = that;
+    return *this;
+  }
+
+  /// When deleting an operand we need to unregister the operand from the
+  /// use-list of the node it used to reference.
+  ~NodeValueHolder() { setOperand(nullptr, 0); }
+  /// Sets the operand to point to \p N. This method registers the operand as a
+  /// user of \p N.
+  void setOperand(Node *v, unsigned resNo);
+  /// Get the index which selects a specific result in the SDNode
+  unsigned getResNo() const { return v_.resNo_; }
+  /// \returns the underlying pointer.
+  Node *getNode() const { return v_.node_; }
+  /// \returns the underlying pointer when casting.
+  operator Node *() const { return v_.node_; }
+
+  operator NodeValue() const { return NodeValue(v_); }
+
+  /// Replace all of the uses of this value with \p v.
+  void replaceAllUsesOfWith(NodeValue v);
+
+  /// Provide a smart-pointer interface.
+  Node *operator->() const { return v_.node_; }
+  /// Return the TypeRef of the referenced return value.
+  TypeRef getType() const;
+
+  /// Methods that forward to the result type (that must be valid):
+  /// @{
+  ElemKind getElementType() const;
+  llvm::ArrayRef<size_t> dims() const;
+  /// @}
+
+  bool operator==(const NodeValueHolder &O) const { return v_ == O.v_; }
+
+  bool operator<(const NodeValueHolder &O) const { return v_ < O.v_; }
+};
+
 /// A simple linear map that stores NodeValue without maintaining the reverse
 /// reference that allows the RAUW operation.
 class UnownedNodeValueMap {
@@ -126,22 +197,22 @@ public:
 struct NodeUse {
   /// The operand site. This is the address of the operand that points to our
   /// node.
-  NodeValue *site_;
+  NodeValueHolder *site_;
 
-  explicit NodeUse(NodeValue *site) : site_(site) {}
+  explicit NodeUse(NodeValueHolder *site) : site_(site) {}
 
   bool operator==(const NodeUse &other) const { return site_ == other.site_; }
 
   /// \returns the instruction that the use refers to.
-  NodeValue *get() const { return site_; }
+  NodeValueHolder *get() const { return site_; }
   /// Sets the operand to a new value.
-  void setOperand(NodeValue &site);
+  void setOperand(NodeValueHolder &site);
 };
 
 /// Represents a node in the compute graph.
 class Node : public Named,
              public Kinded,
-             public UseDef<Node, NodeValue, NodeUse>,
+             public UseDef<Node, NodeValueHolder, NodeUse>,
              public llvm::ilist_node<Node> {
   friend llvm::ilist_traits<Node>;
 
@@ -155,7 +226,7 @@ protected:
   unsigned numRes_{0};
   /// A nullable reference to some tensor value that may predicate the execution
   /// of the current node.
-  NodeValue predicate_{nullptr};
+  NodeValueHolder predicate_{nullptr};
 
   /// Destroys a node and deallocates the memory. This method is typically
   /// implicitly invoked when a node is being removed from the intrusive list of
@@ -166,7 +237,7 @@ public:
   Node(Kinded::Kind k, llvm::StringRef name) : Named(name), Kinded(k) {}
 
   /// \returns the nullable predicate of the current node.
-  const NodeValue &getPredicate() const;
+  const NodeValueHolder &getPredicate() const;
   /// Assigns a nullable predicate to the current node.
   void setPredicate(const NodeValue &P);
   /// Checks if a predicate is assigned to the current node.
@@ -182,8 +253,8 @@ public:
   /// Getters to access Node's inputs and outputs.
   unsigned getNumInputs() const;
   llvm::StringRef getInputName(unsigned idx) const;
-  NodeValue &getNthInput(unsigned idx);
-  const NodeValue &getNthInput(unsigned idx) const;
+  NodeValueHolder &getNthInput(unsigned idx);
+  const NodeValueHolder &getNthInput(unsigned idx) const;
   llvm::StringRef getOutputName(unsigned idx) const;
   bool hasSideEffects() const;
   bool isArithmetic() const;
@@ -282,6 +353,21 @@ template <> struct simplify_type<const glow::NodeValue> {
   }
 };
 
+/// Allow casting NodeValue into Node*.
+template <> struct simplify_type<glow::NodeValueHolder> {
+  typedef glow::Node *SimpleType;
+  static SimpleType getSimplifiedValue(glow::NodeValueHolder &val) {
+    return val.getNode();
+  }
+};
+/// Allow casting NodeValue into Node*.
+template <> struct simplify_type<const glow::NodeValueHolder> {
+  typedef glow::Node *SimpleType;
+  static SimpleType getSimplifiedValue(const glow::NodeValueHolder &val) {
+    return val.getNode();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // ilist_traits for glow::Node
 //===----------------------------------------------------------------------===//
@@ -311,6 +397,19 @@ private:
 namespace std {
 template <> struct hash<glow::NodeValue> {
   typedef glow::NodeValue argument_type;
+  typedef std::size_t result_type;
+  result_type operator()(argument_type const &s) const noexcept {
+    auto name = s.getNode()->getName();
+    result_type const h1(std::hash<std::string>{}(name.str()));
+    result_type const h2(std::hash<unsigned>{}(s.getResNo()));
+    return h1 ^ (h2 << 8);
+  }
+};
+} // namespace std
+
+namespace std {
+template <> struct hash<glow::NodeValueHolder> {
+  typedef glow::NodeValueHolder argument_type;
   typedef std::size_t result_type;
   result_type operator()(argument_type const &s) const noexcept {
     auto name = s.getNode()->getName();

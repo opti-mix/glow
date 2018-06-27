@@ -1003,8 +1003,8 @@ void checkIntConvolution(ExecutionEngine &EE, unsigned convDepth) {
   auto *conv = F->createConv("conv", input, convDepth, 5, 1, 0, 1);
   auto *res = mod.createVariable(ElemKind::FloatTy, conv->dims(), "res");
 
-  auto filter = conv->getFilter();
-  auto bias = conv->getBias();
+  auto &filter = conv->getFilter();
+  auto &bias = conv->getBias();
 
   input->getPayload().getHandle().randomize(-1.0, 1.0, mod.getPRNG());
   llvm::cast<Variable>(bias)->getPayload().getHandle().randomize(-2.0, 2.0,
@@ -1081,8 +1081,8 @@ TEST_P(InterpAndCPU, IntFC) {
   auto *fc = F_->createFullyConnected("FC", input, 30);
   auto *res = mod_.createVariable(ElemKind::FloatTy, fc->dims(), "res");
 
-  auto weights = fc->getWeights();
-  auto bias = fc->getBias();
+  auto &weights = fc->getWeights();
+  auto &bias = fc->getBias();
 
   input->getPayload().getHandle().randomize(-1.0, 1.0, mod_.getPRNG());
   llvm::cast<Variable>(bias)->getPayload().getHandle().randomize(

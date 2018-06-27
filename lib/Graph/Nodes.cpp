@@ -113,7 +113,7 @@ llvm::StringRef Variable::getInputName(unsigned idx) const {
   llvm_unreachable("Invalid index");
 }
 
-NodeValue &Variable::getNthInput(unsigned idx) {
+NodeValueHolder &Variable::getNthInput(unsigned idx) {
   llvm_unreachable("Invalid index");
 }
 
@@ -315,8 +315,8 @@ void PoolAvgGradNode::verify() const {
 }
 
 void MatMulNode::verify() const {
-  auto lhs = getLHS();
-  auto rhs = getRHS();
+  NodeValue lhs = getLHS();
+  NodeValue rhs = getRHS();
   auto dest = getResult();
 
   auto LDims = lhs.dims();
@@ -372,7 +372,7 @@ void ReshapeNode::verify() const {
 
 void TransposeNode::verify() const {
   auto dest = getResult();
-  auto src = getInput();
+  auto &src = getInput();
   (void)dest;
   ShapeVector shape;
 
@@ -387,8 +387,8 @@ void TransposeNode::verify() const {
 void SplatNode::verify() const {}
 
 void InsertTensorNode::verify() const {
-  auto dest = getBig();
-  auto src = getSmall();
+  const NodeValue dest = getBig();
+  const NodeValue src = getSmall();
   auto offsets = getStart();
   unsigned numDims = dest.dims().size();
   (void)numDims;
@@ -405,7 +405,7 @@ void InsertTensorNode::verify() const {
 
 void SliceNode::verify() const {
   auto dest = getResult();
-  auto src = getInput();
+  const NodeValue src = getInput();
   auto offsets = getStart();
   unsigned numDims = dest.dims().size();
   (void)numDims;
@@ -709,6 +709,10 @@ llvm::hash_code hash_value(const glow::Type *T) {
 llvm::hash_code hash_value(glow::Node *N) { return N->getHash(); }
 
 llvm::hash_code hash_value(const glow::NodeValue &NV) {
+  return llvm::hash_combine(NV.getNode(), NV.getResNo());
+}
+
+llvm::hash_code hash_value(const glow::NodeValueHolder &NV) {
   return llvm::hash_combine(NV.getNode(), NV.getResNo());
 }
 } // namespace glow
