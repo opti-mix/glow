@@ -78,12 +78,12 @@ void lowerDivGradNode(Function *F, DivGradNode &node) {
 }
 
 void lowerRegressionNode(RegressionNode &node) {
-  auto &input = node.getInput();
+  auto input = node.getInput();
   node.getResult().replaceAllUsesOfWith(input);
 }
 
 void lowerRegressionGradNode(Function *F, RegressionGradNode &node) {
-  // auto outG = node.getInput();
+  auto outG = node.getInput();
 
   auto inputG = F->createSub("rgn.grad", node.getInput(), node.getExpected());
   auto expG = F->createSplat("exp.grad", node.getExpected().getType(), 0);
@@ -114,7 +114,7 @@ void lowerFullyConnectedNode(Function *F, FullyConnectedNode &FC) {
 void lowerFullyConnectedGradNode(Function *F, FullyConnectedGradNode &FCG) {
   // Follow the lowering from here:
   // https://github.com/huyouare/CS231n/blob/master/assignment2/cs231n/layers.py#L53
-  auto &dout = FCG.getGradOfOriginalOutputNamedResult();
+  auto dout = FCG.getGradOfOriginalOutputNamedResult();
   auto xDims = flattenCdr(FCG.getInput().dims());
 
   // dx = dout * w.T

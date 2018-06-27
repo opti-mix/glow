@@ -902,7 +902,7 @@ static NodeValue simplifyConcatNode(Function *F, ConcatNode *CN) {
     // Check if the slices span the input value.
     bool found = findSlicesThatSpanInput(slices, CN->getDim(), order);
     if (found && order.size() == slices.size()) {
-      auto &orig = order[0]->getInput();
+      auto orig = order[0]->getInput();
       // The original value that we extract from must be of the same shape as
       // the concat.
       if (CN->getType() == orig.getType()) {

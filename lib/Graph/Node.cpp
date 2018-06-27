@@ -268,7 +268,7 @@ NodeValueHolder &Node::getNthInput(unsigned idx) {
   }
 }
 
-const NodeValueHolder &Node::getNthInput(unsigned idx) const {
+const NodeValue Node::getNthInput(unsigned idx) const {
   switch (getKind()) {
 #define DEF_NODE(CLASS, NAME)                                                  \
   case glow::Kinded::Kind::CLASS##Kind:                                        \

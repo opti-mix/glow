@@ -107,11 +107,10 @@ public:
 };
 
 struct NodeValueHolder {
-private:
-  NodeValue v_;
-
 public:
-  /// Create a new value and register the node we reference.
+  friend class Node;
+  NodeValue v_;
+ /// Create a new value and register the node we reference
   /*implicit*/ NodeValueHolder(Node *N);
 
   /// Create a new value for result \p resNo and register the node we reference.
@@ -124,6 +123,13 @@ public:
   NodeValueHolder(const NodeValueHolder &that) : v_(nullptr) {
     setOperand(that.getNode(), that.getResNo());
   }
+  
+public:
+  NodeValueHolder() : v_(nullptr) {}
+ 
+  /// When deleting an operand we need to unregister the operand from the
+  /// use-list of the node it used to reference.
+  ~NodeValueHolder() { setOperand(nullptr, 0); }
 
   /// Unregister old value, assign new NodeValue and register it.
   NodeValueHolder &operator=(const NodeValueHolder &that) {
@@ -137,9 +143,6 @@ public:
     return *this;
   }
 
-  /// When deleting an operand we need to unregister the operand from the
-  /// use-list of the node it used to reference.
-  ~NodeValueHolder() { setOperand(nullptr, 0); }
   /// Sets the operand to point to \p N. This method registers the operand as a
   /// user of \p N.
   void setOperand(Node *v, unsigned resNo);
@@ -254,7 +257,7 @@ public:
   unsigned getNumInputs() const;
   llvm::StringRef getInputName(unsigned idx) const;
   NodeValueHolder &getNthInput(unsigned idx);
-  const NodeValueHolder &getNthInput(unsigned idx) const;
+  const NodeValue getNthInput(unsigned idx) const;
   llvm::StringRef getOutputName(unsigned idx) const;
   bool hasSideEffects() const;
   bool isArithmetic() const;

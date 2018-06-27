@@ -315,8 +315,8 @@ void PoolAvgGradNode::verify() const {
 }
 
 void MatMulNode::verify() const {
-  NodeValue lhs = getLHS();
-  NodeValue rhs = getRHS();
+  auto lhs = getLHS();
+  auto rhs = getRHS();
   auto dest = getResult();
 
   auto LDims = lhs.dims();
@@ -372,7 +372,7 @@ void ReshapeNode::verify() const {
 
 void TransposeNode::verify() const {
   auto dest = getResult();
-  auto &src = getInput();
+  auto src = getInput();
   (void)dest;
   ShapeVector shape;
 
@@ -387,8 +387,8 @@ void TransposeNode::verify() const {
 void SplatNode::verify() const {}
 
 void InsertTensorNode::verify() const {
-  const NodeValue dest = getBig();
-  const NodeValue src = getSmall();
+  auto dest = getBig();
+  auto src = getSmall();
   auto offsets = getStart();
   unsigned numDims = dest.dims().size();
   (void)numDims;
@@ -405,7 +405,7 @@ void InsertTensorNode::verify() const {
 
 void SliceNode::verify() const {
   auto dest = getResult();
-  const NodeValue src = getInput();
+  auto src = getInput();
   auto offsets = getStart();
   unsigned numDims = dest.dims().size();
   (void)numDims;
