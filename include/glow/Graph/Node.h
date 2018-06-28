@@ -106,26 +106,24 @@ public:
   }
 };
 
-struct NodeValueHolder {
+struct NodeValueHolder : NodeValue {
 public:
   friend class Node;
-  NodeValue v_;
- /// Create a new value and register the node we reference
+  /// Create a new value and register the node we reference
   /*implicit*/ NodeValueHolder(Node *N);
 
   /// Create a new value for result \p resNo and register the node we reference.
   NodeValueHolder(Node *N, unsigned resNo);
 
   /// Create a new operand and register it as a new user to the node.
-  NodeValueHolder(const NodeValue &that) : v_(nullptr) {
+  NodeValueHolder(const NodeValue &that) : NodeValue(nullptr) {
     setOperand(that.getNode(), that.getResNo());
   }
-  NodeValueHolder(const NodeValueHolder &that) : v_(nullptr) {
+  NodeValueHolder(const NodeValueHolder &that) : NodeValue(nullptr) {
     setOperand(that.getNode(), that.getResNo());
   }
   
-public:
-  NodeValueHolder() : v_(nullptr) {}
+  NodeValueHolder() : NodeValue(nullptr) {}
  
   /// When deleting an operand we need to unregister the operand from the
   /// use-list of the node it used to reference.
@@ -146,32 +144,9 @@ public:
   /// Sets the operand to point to \p N. This method registers the operand as a
   /// user of \p N.
   void setOperand(Node *v, unsigned resNo);
-  /// Get the index which selects a specific result in the SDNode
-  unsigned getResNo() const { return v_.resNo_; }
-  /// \returns the underlying pointer.
-  Node *getNode() const { return v_.node_; }
-  /// \returns the underlying pointer when casting.
-  operator Node *() const { return v_.node_; }
-
-  operator NodeValue() const { return NodeValue(v_); }
 
   /// Replace all of the uses of this value with \p v.
   void replaceAllUsesOfWith(NodeValue v);
-
-  /// Provide a smart-pointer interface.
-  Node *operator->() const { return v_.node_; }
-  /// Return the TypeRef of the referenced return value.
-  TypeRef getType() const;
-
-  /// Methods that forward to the result type (that must be valid):
-  /// @{
-  ElemKind getElementType() const;
-  llvm::ArrayRef<size_t> dims() const;
-  /// @}
-
-  bool operator==(const NodeValueHolder &O) const { return v_ == O.v_; }
-
-  bool operator<(const NodeValueHolder &O) const { return v_ < O.v_; }
 };
 
 /// A simple linear map that stores NodeValue without maintaining the reverse

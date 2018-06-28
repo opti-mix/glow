@@ -37,7 +37,7 @@ NodeValue::NodeValue(Node *N) {
   resNo_ = 0;
 }
 
-NodeValueHolder::NodeValueHolder(Node *N) : v_(N) { setOperand(N, 0); }
+NodeValueHolder::NodeValueHolder(Node *N) : NodeValue(N) { setOperand(N, 0); }
 
 NodeValue::NodeValue(Node *N, unsigned resNo) {
   assert(resNo < N->getNumResults() && "Invalid result number");
@@ -46,24 +46,24 @@ NodeValue::NodeValue(Node *N, unsigned resNo) {
   resNo_ = resNo;
 }
 
-NodeValueHolder::NodeValueHolder(Node *N, unsigned resNo) : v_(N, resNo) {
+NodeValueHolder::NodeValueHolder(Node *N, unsigned resNo) : NodeValue(N, resNo) {
   setOperand(N, resNo);
 }
 
 void NodeValueHolder::setOperand(Node *v, unsigned resNo) {
-  if (v_.node_ == v && resNo == v_.resNo_) {
+  if (node_ == v && resNo == resNo_) {
     return;
   }
 
-  if (v_.node_) {
-    v_.node_->removeUse(NodeUse(this));
-    v_.node_ = nullptr;
-    v_.resNo_ = 0;
+  if (node_) {
+    node_->removeUse(NodeUse(this));
+    node_ = nullptr;
+    resNo_ = 0;
   }
 
   if (v) {
-    v_.node_ = v;
-    v_.resNo_ = resNo;
+    node_ = v;
+    resNo_ = resNo;
     v->addUse(NodeUse(this));
   }
 }
@@ -87,11 +87,11 @@ void NodeValueHolder::replaceAllUsesOfWith(NodeValue v) {
   if (v.getNode()) {
     assert(getType() == v.getType() && "Replacing value with the wrong type");
   }
-  auto &users = v_.node_->getUsers();
+  auto &users = node_->getUsers();
   llvm::SmallVector<NodeUse, 4> usersVec(users.begin(), users.end());
   for (auto &U : usersVec) {
     NodeValueHolder *site = U.get();
-    assert(site->getNode() == v_.node_ && "Invalid user");
+    assert(site->getNode() == node_ && "Invalid user");
     if (site->getResNo() == getResNo()) {
       site->setOperand(v.getNode(), v.getResNo());
     }
@@ -190,13 +190,13 @@ void Node::visit(Node *parent, NodeWalker *visitor) {
 }
 
 TypeRef NodeValue::getType() const { return node_->getType(resNo_); }
-TypeRef NodeValueHolder::getType() const { return v_.getType(); }
+//TypeRef NodeValueHolder::getType() const { return v_.getType(); }
 
 ElemKind NodeValue::getElementType() const {
   return getType()->getElementType();
 }
 
-ElemKind NodeValueHolder::getElementType() const { return v_.getElementType(); }
+//ElemKind NodeValueHolder::getElementType() const { return v_.getElementType(); }
 
 void UnownedNodeValueMap::insert(NodeValue from, NodeValue to) {
   entries_.push_front(
@@ -229,9 +229,9 @@ bool UnownedNodeValueMap::count(NodeValue from) {
 }
 
 llvm::ArrayRef<size_t> NodeValue::dims() const { return getType()->dims(); }
-llvm::ArrayRef<size_t> NodeValueHolder::dims() const {
-  return v_.getType()->dims();
-}
+//llvm::ArrayRef<size_t> NodeValueHolder::dims() const {
+//  return v_.getType()->dims();
+//}
 
 //===----------------------------------------------------------------------===//
 //                     Debug description methods
