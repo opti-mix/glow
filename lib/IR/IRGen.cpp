@@ -38,9 +38,8 @@ using llvm::isa;
 
 /// Helper function that \returns the number of times the same consecutive
 /// NodeValue in \p inputs is found, starting from index \p i.
-static size_t
-getConsecutiveSameNodeCount(llvm::ArrayRef<NodeValueHolder> inputs,
-                            const size_t i) {
+static size_t getConsecutiveSameNodeCount(NodeValueArrayRef inputs,
+                                          const size_t i) {
   assert(i < inputs.size() && "Index must fit inside the size of the inputs.");
   for (size_t j = i, e = inputs.size(); j < e; j++) {
     if (inputs[i] != inputs[j]) {

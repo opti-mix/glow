@@ -48,7 +48,7 @@ void NodeBuilder::emitCtor(std::ostream &os) const {
 
   // Extra class members:
   for (const auto &op : members_) {
-    os << ", " << getStorageTypename(op.first) << " " << op.second;
+    os << ", " << getCtorArgTypename(op.first) << " " << op.second;
   }
 
   // Initialize the base clases:
@@ -66,7 +66,13 @@ void NodeBuilder::emitCtor(std::ostream &os) const {
 
   // Initialize the members:
   for (const auto &op : members_) {
-    os << ", " << op.second << "_(" << op.second << ")";
+    if (op.first != MemberType::VectorNodeValue) {
+      os << ", " << op.second << "_(" << op.second << ")";
+      continue;
+    }
+    os << ", " << op.second << "_(" << op.second << ".begin(), " << op.second
+       << ".end()"
+       << ")";
   }
 
   // The constructor body:
@@ -93,7 +99,7 @@ void NodeBuilder::emitClassMembers(std::ostream &os) const {
     os << "  Mode mode_;\n";
   }
   for (const auto &op : nodeInputs_) {
-    os << "  NodeValueHolder " << op << "_;\n";
+    os << "  PrivateNodeTypes::NodeValueHandle " << op << "_;\n";
   }
   for (const auto &op : members_) {
     os << "  " << getStorageTypename(op.first) << " " << op.second << "_;\n";
@@ -173,7 +179,7 @@ void NodeBuilder::emitEdges(std::ostream &os) const {
   }
   os << "  llvm_unreachable(\"Invalid index\");\n}\n";
 
-  os << "\nNodeValueHolder &" << name_ << "Node::getNthInput(unsigned idx) {\n";
+  os << "\NodeValue " << name_ << "Node::getNthInput(unsigned idx) {\n";
   for (size_t i = 0; i < nodeInputs_.size(); i++) {
     os << "  if (idx == " << i << ") { return " << nodeInputs_[i] << "_; }\n";
   }
@@ -184,6 +190,22 @@ void NodeBuilder::emitEdges(std::ostream &os) const {
     }
     os << "  if (idx < " << op.second << "_.size()) { return " << op.second
        << "_[idx]; }\n  idx -= " << op.second << "_.size();\n";
+  }
+  os << "  llvm_unreachable(\"Invalid index\");\n}\n";
+
+  os << "\nvoid " << name_
+     << "Node::setNthInput(unsigned idx, NodeValue val) {\n";
+  for (size_t i = 0; i < nodeInputs_.size(); i++) {
+    os << "  if (idx == " << i << ") { " << nodeInputs_[i]
+       << "_ = val; return; }\n";
+  }
+  os << "  idx -= " << nodeInputs_.size() << ";\n";
+  for (const auto &op : members_) {
+    if (op.first != MemberType::VectorNodeValue) {
+      continue;
+    }
+    os << "  if (idx < " << op.second << "_.size()) { " << op.second
+       << "_[idx] = val; return; }\n  idx -= " << op.second << "_.size();\n";
   }
   os << "  llvm_unreachable(\"Invalid index\");\n}\n";
 
@@ -381,7 +403,8 @@ void NodeBuilder::emitNodeClass(std::ostream &os) const {
 
   os << "  unsigned getNumInputs() const;\n"
      << "  llvm::StringRef getInputName(unsigned idx) const;\n"
-     << "  NodeValueHolder &getNthInput(unsigned idx);\n"
+     << "  NodeValue getNthInput(unsigned idx);\n"
+     << "  void setNthInput(unsigned idx, NodeValue val);\n"
      << "  llvm::StringRef getOutputName(unsigned idx) const;\n"
      << "  bool hasSideEffects() const { return " << hasSideEffects_ << "; }\n"
      << "  std::string getDebugDesc() const;\n"

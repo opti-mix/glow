@@ -102,7 +102,7 @@ public:
 
   unsigned getNumInputs() const;
   llvm::StringRef getInputName(unsigned idx) const;
-  NodeValueHolder &getNthInput(unsigned idx);
+  NodeValue getNthInput(unsigned idx);
   llvm::StringRef getOutputName(unsigned idx) const;
   bool hasSideEffects() const;
   std::string getDebugDesc() const;
@@ -149,7 +149,7 @@ llvm::hash_code hash_value(const glow::Type *T);
 llvm::hash_code hash_value(glow::Node *T);
 
 llvm::hash_code hash_value(const glow::NodeValue &T);
-llvm::hash_code hash_value(const glow::NodeValueHolder &T);
+llvm::hash_code hash_value(const glow::PrivateNodeTypes::NodeValueHandle &T);
 
 } // namespace glow
 

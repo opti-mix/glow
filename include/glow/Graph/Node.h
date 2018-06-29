@@ -36,12 +36,10 @@ class NodeWalker;
 /// a computation. Gradient-calculating nodes such as conv-grad return multiple
 /// values. As such, each use of a node computation must indicate the node that
 /// computes it as well as which return value to use from that node. This pair
-/// of information is represented in this class. This class also manages the
-/// node use-def chain, by registering and removing the address of the value
-/// from the use-list. This data structure is similar to LLVM's SDValue.
+/// of information is represented in this class.
 struct NodeValue {
-private:
-  friend struct NodeValueHolder;
+protected:
+  // friend struct NodeTypes::NodeValueHandle;
   /// A pointer to the node (owned by the graph).
   Node *node_{nullptr};
   /// Specifies the node result number to use.
@@ -106,47 +104,103 @@ public:
   }
 };
 
-struct NodeValueHolder : NodeValue {
-public:
+/// PrivateNodeTypes serves as a namespace with access control and defines a set
+/// of private types accessible only from an explicit set of whitelisted types.
+/// The goal is to make it impossible to use these private types outside of this
+/// explicit context.
+class PrivateNodeTypes {
+  // Define a set of whitelisted types that should be able to access types
+  // defined in PrivateNodeTypes. Use "friend" specifier to enumerate these
+  // types.
+  struct NodeValueHandle;
   friend class Node;
-  /// Create a new value and register the node we reference
-  /*implicit*/ NodeValueHolder(Node *N);
+  friend class Variable;
+  friend struct NodeUse;
+  friend struct NodeValue;
+  template <typename T> friend struct llvm::simplify_type;
+  template <typename T> friend struct std::hash;
+  friend class NodeValueArrayRef;
 
-  /// Create a new value for result \p resNo and register the node we reference.
-  NodeValueHolder(Node *N, unsigned resNo);
+#define DEF_NODE(CLASS, NAME) friend class CLASS;
+#include "AutoGenNodes.def"
+#endif
+  /// A handle type for a NodeValue. This type should be used only by the
+  /// class members of Node classes.
+  ///
+  /// This class also manages the node use-def chain, by registering and
+  /// removing the address of the value from the use-list. This data structure
+  /// is similar to LLVM's SDValue. Only these NodeValueHandle instances are
+  /// registered as users of nodes they refer to. The usual NodeValue instances
+  /// are not registered as users.
+  ///
+  /// Instances of NodeValueHandle should always stay inside the Nodes and
+  /// should never leave it. E.g. they cannot be returned as results of function
+  /// calls, etc.
+  struct NodeValueHandle : NodeValue {
+    /// Create a new value and register the node we reference
+    /*implicit*/ NodeValueHandle(Node *N);
 
-  /// Create a new operand and register it as a new user to the node.
-  NodeValueHolder(const NodeValue &that) : NodeValue(nullptr) {
-    setOperand(that.getNode(), that.getResNo());
+    /// Create a new value for result \p resNo and register the node we
+    /// reference.
+    NodeValueHandle(Node *N, unsigned resNo);
+
+    /// Create a new operand and register it as a new user to the node.
+    NodeValueHandle(const NodeValue &that) : NodeValue(nullptr) {
+      setOperand(that.getNode(), that.getResNo());
+    }
+    NodeValueHandle(const NodeValueHandle &that) : NodeValue(nullptr) {
+      setOperand(that.getNode(), that.getResNo());
+    }
+
+    NodeValueHandle() : NodeValue(nullptr) {}
+
+    /// When deleting an operand we need to unregister the operand from the
+    /// use-list of the node it used to reference.
+    ~NodeValueHandle() { setOperand(nullptr, 0); }
+
+    /// Unregister old value, assign new NodeValue and register it.
+    NodeValueHandle &operator=(const NodeValueHandle &that) {
+      setOperand(that.getNode(), that.getResNo());
+      return *this;
+    }
+
+    NodeValueHandle &operator=(const NodeValue &that) {
+      setOperand(that.getNode(), that.getResNo());
+      // v_ = that;
+      return *this;
+    }
+
+    /// Sets the operand to point to \p N. This method registers the operand as
+    /// a user of \p N.
+    void setOperand(Node *v, unsigned resNo);
+  };
+
+  friend llvm::hash_code hash_value(const NodeValueHandle &T);
+};
+
+/// A wrapper class to expose a vector of NodeValueHandles inside an
+/// object as a vector of NodeValues. This is done to avoid leaking of
+/// NodeValueHandles into the user-code. It can be used as a return type of e.g.
+/// getInputs() and similar functions.
+class NodeValueArrayRef {
+  llvm::ArrayRef<PrivateNodeTypes::NodeValueHandle> ref_;
+
+public:
+  using const_iterator =
+      llvm::ArrayRef<PrivateNodeTypes::NodeValueHandle>::const_iterator;
+
+  NodeValueArrayRef(llvm::ArrayRef<PrivateNodeTypes::NodeValueHandle> ref)
+      : ref_(ref) {}
+  NodeValueArrayRef(const std::vector<PrivateNodeTypes::NodeValueHandle> &ref)
+      : ref_(ref) {}
+  const NodeValue &operator[](std::size_t idx) const { return ref_[idx]; }
+  operator std::vector<NodeValue>() {
+    return std::vector<NodeValue>(ref_.begin(), ref_.end());
   }
-  NodeValueHolder(const NodeValueHolder &that) : NodeValue(nullptr) {
-    setOperand(that.getNode(), that.getResNo());
-  }
-  
-  NodeValueHolder() : NodeValue(nullptr) {}
- 
-  /// When deleting an operand we need to unregister the operand from the
-  /// use-list of the node it used to reference.
-  ~NodeValueHolder() { setOperand(nullptr, 0); }
-
-  /// Unregister old value, assign new NodeValue and register it.
-  NodeValueHolder &operator=(const NodeValueHolder &that) {
-    setOperand(that.getNode(), that.getResNo());
-    return *this;
-  }
-
-  NodeValueHolder &operator=(const NodeValue &that) {
-    setOperand(that.getNode(), that.getResNo());
-    // v_ = that;
-    return *this;
-  }
-
-  /// Sets the operand to point to \p N. This method registers the operand as a
-  /// user of \p N.
-  void setOperand(Node *v, unsigned resNo);
-
-  /// Replace all of the uses of this value with \p v.
-  void replaceAllUsesOfWith(NodeValue v);
+  size_t size() const { return ref_.size(); }
+  bool empty() const { return ref_.empty(); }
+  const_iterator begin() { return ref_.begin(); }
+  const_iterator end() { return ref_.end(); }
 };
 
 /// A simple linear map that stores NodeValue without maintaining the reverse
@@ -175,22 +229,22 @@ public:
 struct NodeUse {
   /// The operand site. This is the address of the operand that points to our
   /// node.
-  NodeValueHolder *site_;
+  PrivateNodeTypes::NodeValueHandle *site_;
 
-  explicit NodeUse(NodeValueHolder *site) : site_(site) {}
+  explicit NodeUse(PrivateNodeTypes::NodeValueHandle *site) : site_(site) {}
 
   bool operator==(const NodeUse &other) const { return site_ == other.site_; }
 
   /// \returns the instruction that the use refers to.
-  NodeValueHolder *get() const { return site_; }
+  PrivateNodeTypes::NodeValueHandle *get() const { return site_; }
   /// Sets the operand to a new value.
-  void setOperand(NodeValueHolder &site);
+  void setOperand(PrivateNodeTypes::NodeValueHandle &site);
 };
 
 /// Represents a node in the compute graph.
 class Node : public Named,
              public Kinded,
-             public UseDef<Node, NodeValueHolder, NodeUse>,
+             public UseDef<Node, PrivateNodeTypes::NodeValueHandle, NodeUse>,
              public llvm::ilist_node<Node> {
   friend llvm::ilist_traits<Node>;
 
@@ -204,7 +258,7 @@ protected:
   unsigned numRes_{0};
   /// A nullable reference to some tensor value that may predicate the execution
   /// of the current node.
-  NodeValueHolder predicate_{nullptr};
+  PrivateNodeTypes::NodeValueHandle predicate_{nullptr};
 
   /// Destroys a node and deallocates the memory. This method is typically
   /// implicitly invoked when a node is being removed from the intrusive list of
@@ -215,7 +269,7 @@ public:
   Node(Kinded::Kind k, llvm::StringRef name) : Named(name), Kinded(k) {}
 
   /// \returns the nullable predicate of the current node.
-  const NodeValueHolder &getPredicate() const;
+  const PrivateNodeTypes::NodeValueHandle &getPredicate() const;
   /// Assigns a nullable predicate to the current node.
   void setPredicate(const NodeValue &P);
   /// Checks if a predicate is assigned to the current node.
@@ -231,8 +285,9 @@ public:
   /// Getters to access Node's inputs and outputs.
   unsigned getNumInputs() const;
   llvm::StringRef getInputName(unsigned idx) const;
-  NodeValueHolder &getNthInput(unsigned idx);
+  NodeValue getNthInput(unsigned idx);
   const NodeValue getNthInput(unsigned idx) const;
+  void setNthInput(unsigned idx, NodeValue val);
   llvm::StringRef getOutputName(unsigned idx) const;
   bool hasSideEffects() const;
   bool isArithmetic() const;
@@ -332,16 +387,19 @@ template <> struct simplify_type<const glow::NodeValue> {
 };
 
 /// Allow casting NodeValue into Node*.
-template <> struct simplify_type<glow::NodeValueHolder> {
+template <> struct simplify_type<glow::PrivateNodeTypes::NodeValueHandle> {
   typedef glow::Node *SimpleType;
-  static SimpleType getSimplifiedValue(glow::NodeValueHolder &val) {
+  static SimpleType
+  getSimplifiedValue(glow::PrivateNodeTypes::NodeValueHandle &val) {
     return val.getNode();
   }
 };
 /// Allow casting NodeValue into Node*.
-template <> struct simplify_type<const glow::NodeValueHolder> {
+template <>
+struct simplify_type<const glow::PrivateNodeTypes::NodeValueHandle> {
   typedef glow::Node *SimpleType;
-  static SimpleType getSimplifiedValue(const glow::NodeValueHolder &val) {
+  static SimpleType
+  getSimplifiedValue(const glow::PrivateNodeTypes::NodeValueHandle &val) {
     return val.getNode();
   }
 };
@@ -386,8 +444,8 @@ template <> struct hash<glow::NodeValue> {
 } // namespace std
 
 namespace std {
-template <> struct hash<glow::NodeValueHolder> {
-  typedef glow::NodeValueHolder argument_type;
+template <> struct hash<glow::PrivateNodeTypes::NodeValueHandle> {
+  typedef glow::PrivateNodeTypes::NodeValueHandle argument_type;
   typedef std::size_t result_type;
   result_type operator()(argument_type const &s) const noexcept {
     auto name = s.getNode()->getName();

@@ -21,7 +21,7 @@
 
 using namespace glow;
 
-void NodeUse::setOperand(NodeValueHolder &other) {
+void NodeUse::setOperand(PrivateNodeTypes::NodeValueHandle &other) {
   if (other && site_->getNode()) {
     assert(site_->getType() == other.getType() &&
            "Setting operand to a node with a different type");
@@ -37,7 +37,9 @@ NodeValue::NodeValue(Node *N) {
   resNo_ = 0;
 }
 
-NodeValueHolder::NodeValueHolder(Node *N) : NodeValue(N) { setOperand(N, 0); }
+PrivateNodeTypes::NodeValueHandle::NodeValueHandle(Node *N) : NodeValue(N) {
+  setOperand(N, 0);
+}
 
 NodeValue::NodeValue(Node *N, unsigned resNo) {
   assert(resNo < N->getNumResults() && "Invalid result number");
@@ -46,11 +48,12 @@ NodeValue::NodeValue(Node *N, unsigned resNo) {
   resNo_ = resNo;
 }
 
-NodeValueHolder::NodeValueHolder(Node *N, unsigned resNo) : NodeValue(N, resNo) {
+PrivateNodeTypes::NodeValueHandle::NodeValueHandle(Node *N, unsigned resNo)
+    : NodeValue(N, resNo) {
   setOperand(N, resNo);
 }
 
-void NodeValueHolder::setOperand(Node *v, unsigned resNo) {
+void PrivateNodeTypes::NodeValueHandle::setOperand(Node *v, unsigned resNo) {
   if (node_ == v && resNo == resNo_) {
     return;
   }
@@ -75,7 +78,7 @@ void NodeValue::replaceAllUsesOfWith(NodeValue v) {
   auto &users = node_->getUsers();
   llvm::SmallVector<NodeUse, 4> usersVec(users.begin(), users.end());
   for (auto &U : usersVec) {
-    NodeValueHolder *site = U.get();
+    PrivateNodeTypes::NodeValueHandle *site = U.get();
     assert(site->getNode() == node_ && "Invalid user");
     if (site->getResNo() == getResNo()) {
       site->setOperand(v.getNode(), v.getResNo());
@@ -83,22 +86,9 @@ void NodeValue::replaceAllUsesOfWith(NodeValue v) {
   }
 }
 
-void NodeValueHolder::replaceAllUsesOfWith(NodeValue v) {
-  if (v.getNode()) {
-    assert(getType() == v.getType() && "Replacing value with the wrong type");
-  }
-  auto &users = node_->getUsers();
-  llvm::SmallVector<NodeUse, 4> usersVec(users.begin(), users.end());
-  for (auto &U : usersVec) {
-    NodeValueHolder *site = U.get();
-    assert(site->getNode() == node_ && "Invalid user");
-    if (site->getResNo() == getResNo()) {
-      site->setOperand(v.getNode(), v.getResNo());
-    }
-  }
+const PrivateNodeTypes::NodeValueHandle &Node::getPredicate() const {
+  return predicate_;
 }
-
-const NodeValueHolder &Node::getPredicate() const { return predicate_; }
 
 void Node::setPredicate(const NodeValue &P) { predicate_ = P; }
 
@@ -190,13 +180,10 @@ void Node::visit(Node *parent, NodeWalker *visitor) {
 }
 
 TypeRef NodeValue::getType() const { return node_->getType(resNo_); }
-//TypeRef NodeValueHolder::getType() const { return v_.getType(); }
 
 ElemKind NodeValue::getElementType() const {
   return getType()->getElementType();
 }
-
-//ElemKind NodeValueHolder::getElementType() const { return v_.getElementType(); }
 
 void UnownedNodeValueMap::insert(NodeValue from, NodeValue to) {
   entries_.push_front(
@@ -229,9 +216,6 @@ bool UnownedNodeValueMap::count(NodeValue from) {
 }
 
 llvm::ArrayRef<size_t> NodeValue::dims() const { return getType()->dims(); }
-//llvm::ArrayRef<size_t> NodeValueHolder::dims() const {
-//  return v_.getType()->dims();
-//}
 
 //===----------------------------------------------------------------------===//
 //                     Debug description methods
@@ -257,7 +241,7 @@ llvm::StringRef Node::getInputName(unsigned idx) const {
     llvm_unreachable("Unhandled node");
   }
 }
-NodeValueHolder &Node::getNthInput(unsigned idx) {
+NodeValue Node::getNthInput(unsigned idx) {
   switch (getKind()) {
 #define DEF_NODE(CLASS, NAME)                                                  \
   case glow::Kinded::Kind::CLASS##Kind:                                        \
@@ -273,6 +257,17 @@ const NodeValue Node::getNthInput(unsigned idx) const {
 #define DEF_NODE(CLASS, NAME)                                                  \
   case glow::Kinded::Kind::CLASS##Kind:                                        \
     return static_cast<CLASS *>(const_cast<Node *>(this))->getNthInput(idx);
+#include "AutoGenNodes.def"
+  default:
+    llvm_unreachable("Unhandled node");
+  }
+}
+
+void Node::setNthInput(unsigned idx, NodeValue val) {
+  switch (getKind()) {
+#define DEF_NODE(CLASS, NAME)                                                  \
+  case glow::Kinded::Kind::CLASS##Kind:                                        \
+    return static_cast<CLASS *>(this)->setNthInput(idx, val);
 #include "AutoGenNodes.def"
   default:
     llvm_unreachable("Unhandled node");

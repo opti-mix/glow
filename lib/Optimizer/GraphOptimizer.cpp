@@ -1083,7 +1083,7 @@ static void optimizeReshape(Function *F) {
     auto *reshapeNode = dyn_cast<ReshapeNode>(&node);
     if (!reshapeNode)
       continue;
-    auto &inputNode = reshapeNode->getNthInput(0);
+    auto inputNode = reshapeNode->getNthInput(0);
     // Eliminate ReshapeNode when the input is already the correct shape.
     if (inputNode.dims() == reshapeNode->dims()) {
       reshapeNode->getResult().replaceAllUsesOfWith(inputNode);
