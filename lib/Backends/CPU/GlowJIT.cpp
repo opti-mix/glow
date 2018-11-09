@@ -197,3 +197,17 @@ llvm::JITSymbol GlowJIT::findSymbol(const std::string name) {
   Mangler::getNameWithPrefix(MangledNameStream, name, DL_);
   return compileLayer_.findSymbol(MangledNameStream.str(), false);
 }
+
+#if defined(GLOW_WITH_OMP)
+#include <omp.h>
+/// Use OMP pragmas to force linking against libomp. This makes it possible to
+/// use OMP pragmas in libjit and the JIT will be able to find any symbols from
+/// libomp referenced from the compiled code.
+void useOMP() {
+#pragma omp parallel
+  for (int i = 0; i < 10; ++i) {
+    printf("Hello from thread %d, nthreads %d\n", omp_get_thread_num(),
+           omp_get_num_threads());
+  }
+}
+#endif

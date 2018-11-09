@@ -9,6 +9,11 @@ find_program(LLVM_LINK_BIN
                llvm-link-6.0
                llvm-link)
 
+if (GLOW_WITH_OMP)
+find_library(OMP_LIB NAMES omp libomp.a)
+set(OMP_FLAGS "-Xpreprocessor" "-fopenmp")
+endif()
+
 set(CMAKE_LLIR_CREATE_SHARED_LIBRARY "${LLVM_LINK_BIN} -o <TARGET> <OBJECTS>")
 set(CMAKE_LLIR_CREATE_SHARED_MODULE "${LLVM_LINK_BIN} -o <TARGET> <OBJECTS>")
 set(CMAKE_LLIR_CREATE_STATIC_LIBRARY "${LLVM_LINK_BIN} -o <TARGET> <OBJECTS>")
@@ -38,6 +43,7 @@ set_target_properties(CPURuntime
                         RULE_LAUNCH_COMPILE "${CLANG_BIN} <DEFINES> <INCLUDES> <FLAGS> -o <OBJECT> -c <SOURCE> #")
 target_compile_options(CPURuntime
                        PRIVATE
+                         ${OMP_FLAGS}
                          -ffast-math
                          -g0
                          -emit-llvm
@@ -69,6 +75,10 @@ add_library(CPUBackend
             LLVMIRGen.cpp
             CPUBackend.cpp)
 
+target_compile_options(CPUBackend
+                       PRIVATE
+                         ${OMP_FLAGS})
+
 llvm_map_components_to_libnames(LLVM_TARGET_LIBRARIES ${LLVM_TARGETS_TO_BUILD})
 target_link_libraries(CPUBackend
                       PRIVATE
@@ -95,7 +105,12 @@ target_link_libraries(CPUBackend
                         LLVMTarget
                         LLVMTransformUtils
                         LLVMVectorize
-                        LLVMipo)
+                        LLVMipo
+                        ${OMP_LIB})
+
+target_link_libraries(CPURuntimeNative
+                        ${OMP_LIB})
+
 if(LLVM_VERSION_MAJOR VERSION_GREATER 6)
   target_link_libraries(CPUBackend
                         PRIVATE
