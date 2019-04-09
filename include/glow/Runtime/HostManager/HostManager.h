@@ -75,15 +75,16 @@ class HostManager final {
   /// appropriate device managers for an inference request.
   std::unique_ptr<Executor> executor_;
 
-  /// Backend pointer. This allows the HostManager to optimize functions before
-  /// they are passed to the Partitioner. It is just one since we are currently
-  /// assuming a homogenous set of devices. This may get moved into the
+  /// Backend pointers. This allows the HostManager to optimize functions before
+  /// they are passed to the Partitioner. This may get moved into the
   /// Partitioner at a later point.
-  std::unique_ptr<Backend> backend_;
+  std::map<BackendKind, std::unique_ptr<Backend>> backend_;
+  /// Backends in the order provided by the client.
+  std::vector<Backend *> orderedBackends_;
 
   /// The provisioner owns the compiledFunctions and handles loading functions
   /// onto the devices.
-  std::unique_ptr<Provisioner> provisioner_;
+  std::map<BackendKind, std::unique_ptr<Provisioner>> provisioner_;
 
 public:
   /// Adds the network to the host and does the necessary setup work. This

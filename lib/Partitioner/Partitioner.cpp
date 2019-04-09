@@ -19,8 +19,9 @@
 using namespace glow;
 using llvm::isa;
 
-Partitioner::Partitioner(Module *parent, const std::vector<DeviceInfo> &devices)
-    : module_(parent), deviceInfo_(devices) {
+Partitioner::Partitioner(Module *parent, const std::vector<DeviceInfo> &devices,
+                         BackendKind backendKind)
+    : module_(parent), deviceInfo_(devices), backendKind_(backendKind) {
   memSize_ = module_->getConstantsSize();
 }
 
@@ -404,7 +405,7 @@ NodeToFunctionMap Partitioner::selectPartitions(Function *F,
   for (size_t k = 0, e = cut.size(); k < e; k++) {
     newF = F->getParent()->createFunction(std::string(F->getName()) + "_part" +
                                           std::to_string(++color));
-    mapping.createPartition(newF);
+    mapping.createPartition(newF, backendKind_);
     uint64_t mem = 0;
     for (int i = k > 0 ? cut[k - 1] : level - 1; i > cut[k]; i--) {
       for (size_t j = 0, e1 = bfs[i].size(); j < e1; j++) {
@@ -412,7 +413,7 @@ NodeToFunctionMap Partitioner::selectPartitions(Function *F,
         if (mem + memUsage_[N] > availableMemory) {
           newF = F->getParent()->createFunction(
               std::string(F->getName()) + "_part" + std::to_string(++color));
-          mapping.createPartition(newF);
+          mapping.createPartition(newF, backendKind_);
           mem = memUsage_[N];
         } else {
           mem += memUsage_[N];
@@ -586,6 +587,302 @@ DAGListTy &Partitioner::Partition() {
 
   // Remove the original function after partitioning.
   module_->eraseFunction(F_);
+
+  auto funcList = module_->getFunctions();
+  for (Function *F : funcList) {
+    (void)F;
+    assert(F->verify() && "Conversion led to invalid function");
+  }
+
+  // TODO: Optional: if (k < number of devices)
+  // Check the computation time of each sub-module, and find out the "key"
+  // sub-module to decide if duplicating the sub-module is necessary.
+
+  return partitions_;
+}
+
+BackendBasedPartitioner::BackendBasedPartitioner(
+    Module *parent, const std::vector<Backend *> &orderedBackends)
+    : module_(parent), orderedBackends_(orderedBackends) {}
+
+/// Current only partition the representative function.
+void BackendBasedPartitioner::doPartitioning(Function *F,
+                                             NodeToFunctionMap &mapping) {
+  // The dummy node.
+  rootDAGNodeTy DAGRoot = llvm::make_unique<DAGNode>();
+  nodesDAGNodeTy nodes;
+  DAGRoot->logicalDevice = 0;
+  DAGRoot->name = F->getName();
+  DAGRoot->deviceID = 0;
+  DAGRoot->logicalDevice = 0;
+  DAGRoot->backendKind = orderedBackends_[0]->getBackendKind();
+  DAGNode *root = DAGRoot.get();
+  llvm::DenseMap<Node *, Node *> currToNew;
+
+  // Clone nodes into target partition.
+  for (auto &N : F->getNodes()) {
+    auto *clone = N.clone();
+    currToNew[&N] = clone;
+    mapping[&N]->addNode(clone);
+  }
+
+  // For any dependency that crosses a partition, add a placeholder and save
+  // node. Record the dependence in the function graph.
+  int logicalID = 0;
+  std::unordered_map<NodeValue, Placeholder *> placeholders;
+  llvm::DenseMap<Function *, DAGNode *> funcDAG;
+  for (auto *subF : mapping.getPartitions()) {
+    if (funcDAG.find(subF) == funcDAG.end()) {
+      std::unique_ptr<DAGNode> subDAG = llvm::make_unique<DAGNode>();
+      subDAG->name = subF->getName();
+      subDAG->logicalDevice = logicalID++;
+      subDAG->backendKind = mapping.getPartitionBackendKind(subF);
+      funcDAG[subF] = subDAG.get();
+      nodes.push_back(std::move(subDAG));
+    }
+
+    // Link subF to its parents.
+    std::set<Function *> parents;
+    for (auto &N : subF->getNodes()) {
+      for (int inp = 0, e = N.getNumInputs(); inp < e; inp++) {
+        auto input = N.getNthInput(inp);
+        if (isa<Storage>(input.getNode()))
+          continue;
+
+        auto *inputF = mapping[input.getNode()];
+        if (subF == inputF)
+          continue;
+
+        // Check if a DAGNode for subF's parent is created or not. If not,
+        // create one.
+        if (funcDAG.find(inputF) == funcDAG.end()) {
+          std::unique_ptr<DAGNode> subDAG = llvm::make_unique<DAGNode>();
+          subDAG->name = inputF->getName();
+          subDAG->backendKind = mapping.getPartitionBackendKind(inputF);
+          subDAG->logicalDevice = logicalID++;
+          funcDAG[inputF] = subDAG.get();
+          nodes.push_back(std::move(subDAG));
+        }
+
+        // subF is a child of inputF, inputF is a parent of subF.
+        if (parents.find(inputF) == parents.end()) {
+          funcDAG[inputF]->children.push_back(funcDAG[subF]);
+          funcDAG[subF]->parents.push_back(funcDAG[inputF]);
+          parents.insert(inputF);
+        }
+
+        // If we've already created a placeholder for this dependence, use it.
+        auto it = placeholders.find(input);
+        if (it != placeholders.end()) {
+          N.setNthInput(inp, it->second);
+          continue;
+        }
+
+        // Create a new placeholder to represent this dependence.
+        auto *save = inputF->createSave("tmp", input);
+        auto *tmp = save->getPlaceholder();
+        placeholders[input] = tmp;
+        N.setNthInput(inp, tmp);
+      }
+    }
+  }
+
+  DAG dag;
+  dag.root = std::move(DAGRoot);
+  dag.nodes = std::move(nodes);
+  partitions_.push_back(std::move(dag));
+
+  // Update links between nodes in the cloned functions. Add placeholders (and
+  // save nodes) where a link crosses a partition boundary.
+  for (auto *subF : mapping.getPartitions()) {
+    for (auto &N : subF->getNodes()) {
+      for (int inp = 0, e = N.getNumInputs(); inp < e; inp++) {
+        auto input = N.getNthInput(inp);
+        if (isa<Storage>(input.getNode()))
+          continue;
+        // Link this node to the clone of its input.
+        auto *clone = currToNew[input.getNode()];
+        N.setNthInput(inp, NodeValue(clone, input.getResNo()));
+      }
+    }
+  }
+
+  // For all DAGNode without parents, link them to the root DAG.
+  for (auto *subF : mapping.getPartitions()) {
+    if (funcDAG[subF]->parents.size() == 0) {
+      funcDAG[subF]->parents.push_back(root);
+      root->children.push_back(funcDAG[subF]);
+    }
+  }
+}
+
+#include "glow/Graph/Utils.h"
+
+/// Assign nodes to partitions and return the mapping.
+NodeToFunctionMap BackendBasedPartitioner::selectPartitions(Function *F) {
+  // Walk nodes of the function. Try to put connected nodes executable on the
+  // same backend kind into the same partition.
+  NodeToFunctionMap mapping;
+  std::unordered_map<Node *, BackendKind> nodeToBackendKind;
+
+  // For each node find a backend that supports it.
+  for (auto &N : F->getNodes()) {
+    for (auto &backend : orderedBackends_) {
+      // Find the first backend that supports this node. The order of backends
+      // is important.
+      if (backend->isOpSupported(N)) {
+        // Put this node into a partition for this backend.
+        nodeToBackendKind[&N] = backend->getBackendKind();
+        break;
+      }
+    }
+    assert(nodeToBackendKind.find(&N) != nodeToBackendKind.end() &&
+           "Node is not supported by any of the provided backends");
+  }
+
+  // Now create a bunch of functions and assign nodes to them.
+  int color = 0;
+
+#if 0
+  // Use a post-order visitor so that inputs of a node are visited before the
+  // node itself.
+  GraphPostOrderVisitor pov(*F);
+  for (auto *N : pov.getPostOrder()) {
+    // Storage nodes do not require any computation.
+    if (isa<Storage>(N)) {
+      continue;
+    }
+    if (mapping.find(N) != mapping.end()) {
+      continue;
+    }
+    auto nodeBackendKind = nodeToBackendKind[N];
+    // If all of this node inputs are in the same partition, we could put this
+    // node into the same partition.
+    // TODO: If there are two independent partitions of the same backend kind, we could merge them into one.
+    Function *partitionF{nullptr};
+    for (unsigned inputIdx = 0, e = N->getNumInputs(); inputIdx < e;
+         ++inputIdx) {
+      auto input = N->getNthInput(inputIdx);
+      auto *inputNode = input.getNode();
+      if (isa<Storage>(inputNode)) {
+        continue;
+      }
+      auto inputBackendKind = nodeToBackendKind[inputNode];
+      auto it = mapping.find(inputNode);
+      assert(it != mapping.end() &&
+                    "Input should have been assigned to a partition");
+      if (nodeBackendKind != inputBackendKind) {
+        partitionF = nullptr;
+        break;
+      }
+      // Use the same partition as the input.
+      // assert(partitionF == nullptr && "Inputs of the same backend kind are
+      // assigned to different partitions");
+      if (partitionF && partitionF != it->second) {
+        partitionF = nullptr;
+        break;
+      }
+      partitionF = it->second;
+    }
+
+    if (!partitionF) {
+      // No input partition for reuse was found. Create a new partition.
+      partitionF = F->getParent()->createFunction(
+          std::string(F->getName()) + "_part" + std::to_string(++color));
+      mapping.createPartition(partitionF);
+    }
+
+    mapping.add(N, partitionF);
+  }
+#endif
+  // Use a pre-order visitor so that inputs of a node are visited after the
+  // node itself.
+  GraphPreOrderVisitor pov(*F);
+  for (auto *N : pov.getPreOrder()) {
+    // Storage nodes do not require any computation.
+    if (isa<Storage>(N)) {
+      continue;
+    }
+    if (mapping.find(N) != mapping.end()) {
+      continue;
+    }
+    auto nodeBackendKind = nodeToBackendKind[N];
+    // If all of this node inputs are in the same partition, we could put this
+    // node into the same partition.
+    // TODO: If there are two independent partitions of the same backend kind,
+    // we could merge them into one.
+    Function *partitionF{nullptr};
+    for (auto user : N->getUsers()) {
+      auto *userNode = user.getUser();
+      auto userBackendKind = nodeToBackendKind[userNode];
+      auto it = mapping.find(userNode);
+      GLOW_ASSERT(it != mapping.end() &&
+                  "Users of the node should have been assigned to a partition");
+      if (nodeBackendKind != userBackendKind) {
+        partitionF = nullptr;
+        break;
+      }
+      // Use the same partition as the input.
+      // assert(partitionF == nullptr && "Inputs of the same backend kind are
+      // assigned to different partitions");
+      auto userPartitionF = it->second;
+      if (partitionF && partitionF != userPartitionF) {
+        partitionF = nullptr;
+        break;
+      }
+      partitionF = userPartitionF;
+    }
+
+    if (!partitionF) {
+      // No input partition for reuse was found. Create a new partition.
+      partitionF = F->getParent()->createFunction(
+          std::string(F->getName()) + "_part" + std::to_string(++color));
+      mapping.createPartition(partitionF, nodeBackendKind);
+    }
+
+    mapping.add(N, partitionF);
+  }
+  return mapping;
+}
+
+DAGListTy &BackendBasedPartitioner::Partition() {
+#if 0
+  if (orderedBackends_.size() == 1) {
+    // No partition is needed. Create DAGNode and return. This root is alway a
+    // dummy function.
+    for (auto F : module_->getFunctions()) {
+      std::unique_ptr<DAGNode> DAG0 = llvm::make_unique<DAGNode>();
+      DAG0->logicalDevice = 0;
+      DAG0->name = F->getName();
+      DAG0->backendKind = orderedBackends_[0]->getBackendKind();
+      std::unique_ptr<DAGNode> DAG1 = llvm::make_unique<DAGNode>();
+      DAG1->logicalDevice = 0;
+      DAG1->name = F->getName();
+      DAG1->backendKind = orderedBackends_[0]->getBackendKind();
+      DAG1->parents.push_back(DAG0.get());
+      DAG0->children.push_back(DAG1.get());
+      nodesDAGNodeTy nodes;
+      nodes.push_back(std::move(DAG1));
+      partitions_.push_back({std::move(DAG0), std::move(nodes)});
+    }
+    return partitions_;
+  }
+#endif
+
+  GLOW_ASSERT(module_->getFunctions().size() == 1 &&
+              "Expected only one function in a module");
+
+  auto *F = *module_->getFunctions().begin();
+
+  // Partition
+  // Use BFS to do the initial partitioning. Starting from the final node, BFS
+  // until the memory limitation reached one by one.
+  NodeToFunctionMap partitionMap = selectPartitions(F);
+
+  doPartitioning(F, partitionMap);
+
+  // Remove the original function after partitioning.
+  module_->eraseFunction(F);
 
   auto funcList = module_->getFunctions();
   for (Function *F : funcList) {

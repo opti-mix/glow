@@ -106,6 +106,9 @@ public:
   /// \returns true if we expect a Module with the estimated constant size will
   /// fit on the device.
   virtual bool isMemoryAvailable(uint64_t estimate) const = 0;
+
+  /// \returns backend for this device.
+  // virtual const Backend &getBackend() const;
 };
 
 } // namespace runtime

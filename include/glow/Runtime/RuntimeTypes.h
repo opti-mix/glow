@@ -73,6 +73,8 @@ struct DAGNode {
   std::vector<DAGNode *> parents;
   /// ID of the deviceManager that this network is assigned to.
   DeviceIDTy deviceID;
+  /// Backend kind for this network.
+  BackendKind backendKind;
   /// The logicalDevice is an output of the Partitioner to indicate that two
   /// networks should be assigned to the same device.
   DeviceIDTy logicalDevice;

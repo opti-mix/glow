@@ -236,11 +236,17 @@ public:
     return inTypes_[idx];
   }
 
+  /// \returns number of input types.
+  const size_t getNumInputTypes() const { return inTypes_.size(); }
+
   /// \returns the output type located at \p idx.
   const TypeRef getOutTy(size_t idx) const {
     assert(idx < outTypes_.size());
     return outTypes_[idx];
   }
+
+  /// \returns number of output types.
+  const size_t getNumOutputTypes() const { return outTypes_.size(); }
 
   /// \returns the input type located at \p idx.
   const ElemKind getInElemTy(size_t idx) const {

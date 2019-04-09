@@ -31,7 +31,7 @@ namespace runtime {
 /// device.
 class Provisioner final {
 public:
-  Provisioner(DeviceManagerMapTy &devices);
+  Provisioner(BackendKind backendKind, DeviceManagerMapTy &devices);
 
   /// Walks \p networks and assigns each function to a DeviceManager in \p
   /// devices. The Provisioner calls the addNetwork method for each

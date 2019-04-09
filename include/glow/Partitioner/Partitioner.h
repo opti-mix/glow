@@ -46,6 +46,9 @@ struct FunctionNameComparator {
 using FunctionToNodesMapTy =
     std::map<Function *, NodesSetTy, FunctionNameComparator>;
 
+using FunctionToBackendKindMapTy =
+    std::map<const Function *, BackendKind, FunctionNameComparator>;
+
 class NodeToFunctionMap {
 
   /// Newly-created partitions.
@@ -53,14 +56,22 @@ class NodeToFunctionMap {
 
   /// Map of nodes in the original function to their target partition.
   NodeToFunctionMapTy nodeToFunction_;
+  FunctionToBackendKindMapTy functionToBackendKind_;
 
   /// Map of sub-functions to their memory consumption.
   PartitionCostMapTy partitionCost_;
 
 public:
   /// Create a new partition \p F.
-  void createPartition(Function *F) { functions_.emplace_back(F); }
-
+  void createPartition(Function *F, BackendKind backendKind) {
+    functions_.emplace_back(F);
+    functionToBackendKind_[F] = backendKind;
+  }
+  BackendKind getPartitionBackendKind(const Function *F) const {
+    assert(functionToBackendKind_.find(F) != functionToBackendKind_.end() &&
+           "Unknown partition");
+    return functionToBackendKind_.find(F)->second;
+  }
   /// Add a new Node->Function mapping.
   void add(Node *N, Function *F) { nodeToFunction_[N] = F; }
 
@@ -98,6 +109,8 @@ class Partitioner {
 
   /// The cost model related to device.
   const std::vector<DeviceInfo> &deviceInfo_;
+  /// The backend to be used.
+  BackendKind backendKind_;
 
   /// The result of module partitioning.
   DAGListTy partitions_;
@@ -154,13 +167,44 @@ public:
   /// identical. The required memory and computation cost for each op can be
   /// found in Module. The \p devices provides the cost model related to
   /// devices.
-  Partitioner(Module *parent, const std::vector<DeviceInfo> &devices);
+  Partitioner(Module *parent, const std::vector<DeviceInfo> &devices,
+              BackendKind backendKind);
 
   /// Decompose each function in a module and return a list of DAGNodes.
   DAGListTy &Partition();
 
   /// Get function for computeTime_
   ComputeTimeMapTy getComputeTime() const { return computeTime_; }
+};
+
+class BackendBasedPartitioner {
+  /// The module that needs to be decomposed.
+  Module *module_;
+  /// Ordered set of backends to be used.
+  const std::vector<Backend *> &orderedBackends_;
+
+  /// The result of module partitioning.
+  DAGListTy partitions_;
+
+  /// Assign nodes to partitions and return the mapping.
+  NodeToFunctionMap selectPartitions(Function *F);
+
+  /// Given the node-function mapping, do the actual partitioning.
+  void doPartitioning(Function *F, NodeToFunctionMap &mapping);
+
+public:
+  /// \p parent is the module which contains the functions need to be divided.
+  /// Here we assume that all the functions in one module belong to a same
+  /// "Function Family", that is, without considerting the "dynamic stuff" (i.e.
+  /// batch size, input/output shape of each op), all the functions are
+  /// identical. The required memory and computation cost for each op can be
+  /// found in Module. The \p devices provides the cost model related to
+  /// devices.
+  BackendBasedPartitioner(Module *parent,
+                          const std::vector<Backend *> &orderedBackends);
+
+  /// Decompose each function in a module and return a list of DAGNodes.
+  DAGListTy &Partition();
 };
 } // namespace glow
 #endif // GLOW_PARTITIONER_PARTITIONER_H

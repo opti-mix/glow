@@ -26,11 +26,14 @@
 using namespace glow;
 using namespace runtime;
 
-Provisioner::Provisioner(DeviceManagerMapTy &devices) {
+Provisioner::Provisioner(BackendKind backendKind, DeviceManagerMapTy &devices) {
   for (auto &device : devices) {
+    if (device.second->getBackendKind() != backendKind) {
+      continue;
+    }
     devices_.push_back(device.second.get());
   }
-  auto backendKind = devices[0]->getBackendKind();
+  // auto backendKind = devices[0]->getBackendKind();
   backend_.reset(createBackend(backendKind));
 }
 
@@ -45,6 +48,10 @@ llvm::Error Provisioner::provision(DAGListTy &networks, Module &module) {
 
   for (auto &network : networks) {
     for (auto &node : network.nodes) {
+      // Skip any nodes not related to this provisioner.
+      if (node->backendKind == backend_->getBackendKind()) {
+        continue;
+      }
       auto it = logicalDevices.find(node->logicalDevice);
       if (it != logicalDevices.end()) {
         it->second.push_back(node.get());

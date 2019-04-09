@@ -35,26 +35,41 @@ HostManager::HostManager(std::vector<std::unique_ptr<DeviceConfig>> configs) {
 
 llvm::Error
 HostManager::init(std::vector<std::unique_ptr<DeviceConfig>> configs) {
-  DeviceIDTy deviceCount = 0;
-
-  if (configs.size() > 0) {
-    backend_.reset(createBackend(configs[0]->getBackendKind()));
+  for (auto &config : configs) {
+    auto backendKind = config->getBackendKind();
+    if (backend_.find(backendKind) == backend_.end()) {
+      backend_[backendKind].reset(createBackend(backendKind));
+      orderedBackends_.emplace_back(backend_[backendKind].get());
+    }
   }
 
+  // Group devices of different kinds into groups.
+  // Create provisioners responsible for each group.
+  // std::unordered_map<BackendKind, DeviceIDTy> deviceCounts;
+  DeviceIDTy deviceCount = 0;
   for (auto &config : configs) {
-    if (!config->hasName()) {
-      config->setName(backend_->getBackendName() + std::to_string(deviceCount));
+    auto backendKind = config->getBackendKind();
+    // auto &deviceCount = deviceCounts[backendKind];
+    if (backend_.find(backendKind) == backend_.end()) {
+      backend_[backendKind].reset(createBackend(backendKind));
     }
 
-    auto kind = config->getBackendKind();
+    if (!config->hasName()) {
+      config->setName(backend_[backendKind]->getBackendName() +
+                      std::to_string(deviceCount));
+    }
+
     devices_[deviceCount] = std::unique_ptr<DeviceManager>(
-        DeviceManager::createDeviceManager(kind, std::move(config)));
+        DeviceManager::createDeviceManager(backendKind, std::move(config)));
 
     RETURN_IF_ERR(devices_[deviceCount]->init());
 
     deviceCount++;
   }
-  provisioner_.reset(new Provisioner(devices_));
+  for (auto &device : devices_) {
+    auto backendKind = device.second->getBackendKind();
+    provisioner_[backendKind].reset(new Provisioner(backendKind, devices_));
+  }
   executor_.reset(createExecutor(devices_));
 
   return llvm::Error::success();
@@ -80,6 +95,28 @@ llvm::Error HostManager::addNetwork(std::unique_ptr<Module> module) {
     info.availableMemory = device.second->getAvailableMemory();
     deviceInfo.push_back(info);
   }
+  // First use a backend-based partitioner.
+  BackendBasedPartitioner backendBasedPartitioner(module.get(),
+                                                  orderedBackends_);
+  auto &backendPartitions = backendBasedPartitioner.Partition();
+  // Optimize functions before passing to device-based partitioner.
+  // Currently hardcoding inference.
+  for (auto &partition : backendPartitions) {
+    CompilationOptions opts;
+    opts.mode = CompilationMode::Infer;
+    // auto backendKind = partition.root->backendKind;
+    // auto *F = module->getFunction(partition.root->name);
+    // if (!F) {
+    //   continue;
+    // }
+    // backend_[backendKind]->optimizeFunction(F, opts);
+    for (auto &partNode : partition.nodes) {
+      auto *F = module->getFunction(partNode->name);
+      assert(F && "No function found for a partition node");
+      backend_[partNode->backendKind]->optimizeFunction(F, opts);
+    }
+  }
+#if 0
   // Optimize functions before passing to partitioner.
   // Currently hardcoding inference.
   if (backend_) {
@@ -89,10 +126,14 @@ llvm::Error HostManager::addNetwork(std::unique_ptr<Module> module) {
       backend_->optimizeFunction(F, opts);
     }
   }
-  auto partitioner = Partitioner(module.get(), deviceInfo);
-  auto nodeList = std::move(partitioner.Partition());
+#endif
+  Partitioner partitioner(module.get(), deviceInfo,
+                          orderedBackends_[0]->getBackendKind());
+  auto &nodeList = partitioner.Partition();
 
-  RETURN_IF_ERR(provisioner_->provision(nodeList, *module));
+  for (auto &provisioner : provisioner_) {
+    RETURN_IF_ERR(provisioner.second->provision(nodeList, *module));
+  }
 
   // Clear everything but placeholders from the module then put it a shared_ptr
   // to be shared between all of the networks created from each function in the
@@ -129,7 +170,8 @@ void HostManager::removeNetwork(llvm::StringRef networkName) {
     done.get();
     errToBool(std::move(removeErr));
     // Also remove compiledFunction from Provisioner.
-    provisioner_->removeFunction(node->name);
+    provisioner_[devices_[node->deviceID]->getBackendKind()]->removeFunction(
+        node->name);
   }
   networks_.erase(networkIterator);
 }

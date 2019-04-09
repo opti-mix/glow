@@ -124,7 +124,7 @@ TEST_F(PartitionerTest, Basic1) {
   Tensor ref = res.clone();
 
   std::vector<DeviceInfo> devices = {{3072}, {3072}, {3072}};
-  Partitioner myPartitioner(&mod_, devices);
+  Partitioner myPartitioner(&mod_, devices, BackendKind::Interpreter);
 
   DAGListTy myList = std::move(myPartitioner.Partition());
   ASSERT_EQ(mod_.getFunctions().size(), 3);
@@ -193,7 +193,7 @@ TEST_F(PartitionerTest, Basic2) {
   Tensor ref = res.clone();
 
   std::vector<DeviceInfo> devices = {{2048}, {2048}, {2048}};
-  Partitioner myPartitioner(&mod_, devices);
+  Partitioner myPartitioner(&mod_, devices, BackendKind::Interpreter);
 
   DAGListTy myList = std::move(myPartitioner.Partition());
   ASSERT_EQ(mod_.getFunctions().size(), 2);
@@ -274,7 +274,7 @@ TEST_F(PartitionerTest, Basic1Roofline) {
   std::vector<DeviceInfo> devices = {{3072, 100, 10, 0.1, 1, 0.05},
                                      {3072, 100, 10, 0.1, 1, 0.05},
                                      {3072, 100, 10, 0.1, 1, 0.05}};
-  Partitioner myPartitioner(&mod_, devices);
+  Partitioner myPartitioner(&mod_, devices, BackendKind::Interpreter);
 
   DAGListTy myList = std::move(myPartitioner.Partition());
 
@@ -308,4 +308,128 @@ TEST_F(PartitionerTest, Basic1Roofline) {
 
   ASSERT_EQ(mod_.getFunctions().size(), 3);
   ASSERT_EQ(myList.size(), 1);
+}
+
+template <BackendKind kind, glow::Kinded::Kind unsupportedOpKind>
+class MockBackend : public Backend {
+  // BackendKind kind_;
+  // bool hasFPSupport_;
+  class MockFunction : public CompiledFunction {
+  public:
+    MockFunction(const runtime::RuntimeBundle &bundle)
+        : CompiledFunction(bundle) {}
+
+    void execute(ExecutionContext *) override {}
+
+    BackendKind getCompileBackendKind() const override {
+      return BackendKind::Interpreter;
+    }
+  };
+  // MockBackend(BackendKind kind, bool hasFPSupport)
+  //    : kind_(kind), hasFPSupport_(hasFPSupport) {}
+  BackendKind getBackendKind() const override { return kind; }
+
+  std::string getBackendName() const override { return "MockBackend"; }
+
+  std::unique_ptr<CompiledFunction>
+  compile(Function *F, const CompilationOptions &) const override {
+    return llvm::make_unique<MockFunction>(runtime::RuntimeBundle::create(*F));
+  }
+
+  bool isOpSupported(const NodeInfo &NI) const override {
+#if 0
+    for (size_t idx = 0, e = NI.getNumInputTypes(); idx < e; ++idx) {
+      if (NI.getInTy(idx)->isFPType() && !hasFPSupport) {
+        return false;
+      }
+    }
+    for (size_t idx = 0, e = NI.getNumOutputTypes(); idx < e; ++idx) {
+      if (NI.getOutTy(idx)->isFPType() && !hasFPSupport) {
+        return false;
+      }
+    }
+#endif
+    if (NI.getKind() == unsupportedOpKind) {
+      return false;
+    }
+    return true;
+  }
+
+  bool generateInst(Node *N, IRGenVisitor &irgen) const override {
+    return false;
+  }
+};
+
+class BackendWithoutSub
+    : public MockBackend<BackendKind::CPU, Kinded::Kind::SubNodeKind> {};
+class BackendWithoutMul
+    : public MockBackend<BackendKind::Interpreter, Kinded::Kind::MulNodeKind> {
+};
+class BackendWithoutConv
+    : public MockBackend<BackendKind::Interpreter,
+                         Kinded::Kind::ConvolutionNodeKind> {};
+
+static void createSimpleModule(Module &mod) {
+  mod.clear();
+  auto *F = mod.createFunction("test");
+  auto *input1 =
+      mod.createPlaceholder(ElemKind::FloatTy, {16}, "input1", false);
+  auto *input2 =
+      mod.createPlaceholder(ElemKind::FloatTy, {16}, "input2", false);
+  auto *sub = F->createSub("sub", input1, input2);
+  auto *mul = F->createMul("mul", input1, input2);
+  auto *sum = F->createMul("add", sub, mul);
+  auto *save = F->createSave("ret", sum);
+}
+
+TEST_F(PartitionerTest, SimpleHeterogeneousPartitioning) {
+  // REGISTER_GLOW_BACKEND_FACTORY(BackendWithoutSubFactory, BackendWithoutSub,
+  // CPU);  REGISTER_GLOW_BACKEND_FACTORY(BackendWithoutMulFactory,
+  // BackendWithoutMul,
+  //                              Interpreter);
+  {
+    createSimpleModule(mod_);
+    BackendWithoutSub backendWithoutSub;
+    BackendWithoutMul backendWithoutMul;
+    std::vector<Backend *> backends;
+    backends.emplace_back(&backendWithoutSub);
+    backends.emplace_back(&backendWithoutMul);
+    BackendBasedPartitioner myPartitioner(&mod_, backends);
+    DAGListTy myList = std::move(myPartitioner.Partition());
+    // TODO: Produce two partitions???
+    EXPECT_TRUE(myList.size() >= 1);
+    EXPECT_TRUE(myList[0].nodes.size() == 2);
+    mod_.clear();
+  }
+
+  {
+    createSimpleModule(mod_);
+    std::vector<Backend *> backends;
+    BackendWithoutSub backendWithoutSub;
+    BackendWithoutConv backendWithoutConv;
+    backends.emplace_back(&backendWithoutConv);
+    backends.emplace_back(&backendWithoutSub);
+    BackendBasedPartitioner myPartitioner(&mod_, backends);
+    DAGListTy myList = std::move(myPartitioner.Partition());
+    // TODO: Produce two partitions???
+    EXPECT_TRUE(myList.size() >= 1);
+    // Everything can be handled by BackendWithoutConv.
+    EXPECT_TRUE(myList[0].nodes.size() == 1);
+    mod_.clear();
+  }
+
+  {
+    createSimpleModule(mod_);
+    std::vector<Backend *> backends;
+    BackendWithoutSub backendWithoutSub;
+    backends.emplace_back(&backendWithoutSub);
+    BackendBasedPartitioner myPartitioner(&mod_, backends);
+    EXPECT_DEATH(myPartitioner.Partition(), ".*");
+    DAGListTy myList = std::move(myPartitioner.Partition());
+    // TODO: Produce two partitions???
+    EXPECT_TRUE(myList.size() >= 1);
+    // Sub cannot be handled by the provided backends.
+    EXPECT_TRUE(myList[0].nodes.size() == 1);
+    mod_.clear();
+  }
 }

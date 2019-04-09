@@ -67,7 +67,7 @@ TEST_F(ProvisionerTest, provisionDag) {
     std::unique_ptr<DeviceManager> device(new CPUDeviceManager);
     devices.emplace(i, std::move(device));
   }
-  auto provisioner = Provisioner(devices);
+  auto provisioner = Provisioner(BackendKind::CPU, devices);
   auto err = provisioner.provision(networks, *mod.get());
   // Expect that there was no Error when provisioning
   EXPECT_FALSE(errToBool(std::move(err)));

@@ -49,6 +49,20 @@ std::unique_ptr<HostManager> createHostManager(BackendKind kind) {
   return hostManager;
 }
 
+std::unique_ptr<HostManager> createHostManager(std::vector<BackendKind> kinds) {
+  std::vector<std::unique_ptr<DeviceConfig>> configs;
+  std::set<BackendKind> kindsSet(kinds.begin(), kinds.end());
+  assert(kindsSet.size() == kinds.size() &&
+         "All backend kinds should be unique");
+  for (auto kind : kinds) {
+    auto config = llvm::make_unique<DeviceConfig>(kind);
+    configs.push_back(std::move(config));
+  }
+  std::unique_ptr<HostManager> hostManager =
+      llvm::make_unique<HostManager>(std::move(configs));
+  return hostManager;
+}
+
 void addAndRemoveNetwork(HostManager *manager, unsigned int functionNumber) {
   std::unique_ptr<Module> module = llvm::make_unique<Module>();
   Function *F =
@@ -65,6 +79,10 @@ void addAndRemoveNetwork(HostManager *manager, unsigned int functionNumber) {
 }
 
 TEST_F(HostManagerTest, newHostManager) { createHostManager(BackendKind::CPU); }
+
+TEST_F(HostManagerTest, newHostManagerWithMultipleDeviceKinds) {
+  createHostManager({BackendKind::CPU, BackendKind::Interpreter});
+}
 
 TEST_F(HostManagerTest, addNetwork) {
   auto module = setupModule(6);
@@ -86,7 +104,8 @@ TEST_F(HostManagerTest, runNetwork) {
   auto *saveTensor =
       context->getPlaceholderBindings()->allocate(save->getPlaceholder());
 
-  auto hostManager = createHostManager(BackendKind::CPU);
+  auto hostManager =
+      createHostManager({BackendKind::CPU, BackendKind::Interpreter});
   ASSERT_FALSE(errToBool(hostManager->addNetwork(std::move(module))));
 
   std::promise<void> runNetwork;
