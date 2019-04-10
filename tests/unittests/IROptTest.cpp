@@ -715,3 +715,70 @@ TEST(Optimizer, bufferReuseWithoutDefsPlusCasts) {
   EXPECT_EQ(inputCast ? getOrigin(inputCast) : nullptr, input);
   EXPECT_EQ(inputCast ? inputCast->getOperand(0).first : nullptr, input);
 }
+
+/// Test that QuantizationProfile instructions are placed right after the last
+/// instruction that updates or defines their inputs. This is done to shrink the
+/// lifetime of memory buffers.
+TEST(Optimizer, hoistQuantizationProfile) {
+  Module mod;
+  Function *F = mod.createFunction("InsertOptimizer");
+  IRFunction M(F);
+  IRBuilder bb(&M);
+
+  auto *dest = bb.createWeightVar(glow::ElemKind::FloatTy, {4, 4, 5}, "dest",
+                                  WeightVar::MutabilityKind::Mutable);
+  auto *srcHistogram =
+      bb.createWeightVar(glow::ElemKind::FloatTy, {1}, "srcHistogram",
+                         WeightVar::MutabilityKind::Mutable);
+  auto *srcComputationInfo =
+      bb.createWeightVar(glow::ElemKind::FloatTy, {1}, "srcComputationInfo",
+                         WeightVar::MutabilityKind::Mutable);
+  auto *destHistogram =
+      bb.createWeightVar(glow::ElemKind::FloatTy, {1}, "destHistogram",
+                         WeightVar::MutabilityKind::Mutable);
+  auto *destComputationInfo =
+      bb.createWeightVar(glow::ElemKind::FloatTy, {1}, "destComputationInfo",
+                         WeightVar::MutabilityKind::Mutable);
+
+  auto *allocSrc = bb.createAllocActivationInst(
+      "allocSrc", glow::ElemKind::FloatTy, {3, 4, 5});
+
+  auto *srcCopy =
+      bb.createWeightVar(glow::ElemKind::FloatTy, {3, 4, 5}, "srcCopy",
+                         WeightVar::MutabilityKind::Mutable);
+  auto *srcCopyTVHistogram =
+      bb.createWeightVar(glow::ElemKind::FloatTy, {1}, "srcCopyTVHistogram",
+                         WeightVar::MutabilityKind::Mutable);
+  auto *srcCopyTVComputationInfo = bb.createWeightVar(
+      glow::ElemKind::FloatTy, {1}, "srcCopyTVComputationInfo",
+      WeightVar::MutabilityKind::Mutable);
+
+  auto *splatSrc = bb.createSplatInst("splatSrc", allocSrc, 1.0);
+  auto *srcCopyTV = bb.createTensorViewInst(
+      "srcCopyTV", srcCopy,
+      mod.uniqueTypeWithNewShape(srcCopy->getType(), {5, 4, 3}), {0, 0, 0});
+  bb.createCopyInst("copySplatSrc", srcCopy, allocSrc);
+  auto *splatDest = bb.createSplatInst("splatDest", dest, 2.0);
+  auto *profileSrc = bb.createQuantizationProfileInst(
+      "profileSrc", allocSrc, srcHistogram, srcComputationInfo);
+
+  bb.createDeallocActivationInst("deallocSrc", allocSrc);
+  auto *profileDest = bb.createQuantizationProfileInst(
+      "profileDest", dest, destHistogram, destComputationInfo);
+  auto *profileSrcCopyTV = bb.createQuantizationProfileInst(
+      "profileSrc", srcCopyTV, srcCopyTVHistogram, srcCopyTVComputationInfo);
+  optimize(M, MockBackend().shouldShareBuffers());
+
+  // After optimization, each QuantizationProfile instruction should occur after
+  // a splat or a tensorview that defines its input operand.
+  auto &instrs = M.getInstrs();
+  EXPECT_EQ(instrs.size(), 6);
+
+  // QuantizationProfile of src should occur right after splatSrc.
+  EXPECT_EQ(--profileSrc->getIterator(), splatSrc->getIterator());
+  // QuantizationProfile of dest should occur right after splatDest.
+  EXPECT_EQ(--profileDest->getIterator(), splatDest->getIterator());
+  // QuantizationProfile of a tensorview cannot be moved before the instruction
+  // defining a tensorview.
+  EXPECT_EQ(--profileSrcCopyTV->getIterator(), srcCopyTV->getIterator());
+}

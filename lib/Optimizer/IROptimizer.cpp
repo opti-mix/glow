@@ -384,6 +384,88 @@ static void deleteDeadAllocs(IRFunction &M) {
   }
 }
 
+/// Hoists QuantizationProfile instructions right after the last node that
+/// updates their inputs.
+static void hoistQuantizationProfile(IRFunction &M) {
+  // Maps activation and tensorview instructions to their last non-dealloc user,
+  // which updates or defines the buffer.
+  std::unordered_map<Value *, Instruction *> lastUser;
+  // QuantizationProfile instructions in the current function.
+  llvm::SetVector<Instruction *> quantizationProfiles;
+  auto &instrs = M.getInstrs();
+
+  // Record the last use of each dealloc.
+  for (auto &I : instrs) {
+    // Do not count dealloc instructions as uses.
+    if (isa<DeallocActivationInst>(&I)) {
+      continue;
+    }
+
+    // Do not count QuantizationProfile instructions as uses.
+    if (auto *QPI = dyn_cast<QuantizationProfileInst>(&I)) {
+      // Remember QuantizationProfile instructions if they collect information
+      // about allocations.
+      if (isa<AllocActivationInst>(getOrigin(QPI->getInputTensor()))) {
+        quantizationProfiles.insert(&I);
+      }
+      continue;
+    }
+
+    // Remember last uses of each activation.
+    if (auto alloc = dyn_cast<AllocActivationInst>(&I)) {
+      lastUser[alloc] = &I;
+      continue;
+    }
+
+    // Remember last uses of each tensorview.
+    if (auto tv = dyn_cast<TensorViewInst>(&I)) {
+      lastUser[tv] = &I;
+      continue;
+    }
+
+    for (int i = 0, e = I.getNumOperands(); i < e; i++) {
+      // Skip read-only operands.
+      if (I.getOperand(i).second == OperandKind::In) {
+        continue;
+      }
+      auto op = I.getOperand(i).first;
+      lastUser[op] = &I;
+      // Consider any use of a tensor_view to be also a use
+      // of its source tensor. This is required to make
+      // sure that a lifetime of a tensor_view is always
+      // enclosed inside the lifetime of its source tensor.
+      if (auto *alloc = getAllocationOrigin(op)) {
+        lastUser[alloc] = &I;
+        continue;
+      }
+    }
+  }
+
+  // Now that we've found the last user of each allocated buffer, we can hoist
+  // the QuantizationProfile instructions.
+  for (auto it = quantizationProfiles.begin(), e = quantizationProfiles.end();
+       it != e;
+       /* increment below */) {
+    auto *curr = *it;
+    ++it;
+    auto *qp = cast<QuantizationProfileInst>(&*curr);
+    auto *v = qp->getInputTensor();
+    // Bail, this profile is not based on an allocation or a tensorview.
+    if (!isa<AllocActivationInst>(v) && !isa<TensorViewInst>(v)) {
+      continue;
+    }
+    auto *where = lastUser[v];
+    if (std::next(where->getIterator()) == curr->getIterator()) {
+      // No need to move the instruction, because the last use was
+      // right before the quantization profile instruction.
+      continue;
+    }
+    // Get the instruction after where.
+    where = &*std::next(where->getIterator());
+    M.moveInstruction(where, curr);
+  }
+}
+
 // Replace all users of some value with another value, but don't touch the
 // dealloc instruction, because we need to preserve the well formedness of the
 // IR.
@@ -1632,6 +1714,13 @@ void glow::optimize(IRFunction &M, bool shouldShareBuffers) {
   // Replace applicable InsertTensors and ExtractTensors with TensorViews.
   optimizeInserts(M);
   optimizeExtracts(M);
+
+  // Hoist QuantizationProfile instructions to be right after instructions
+  // defining the values they profile to shorten buffers lifetimes. It needs to
+  // happen before the sharing of buffers kicks in, because shareBuffers may
+  // result in a mix-up of quantization profiling results due to reuse of
+  // buffers.
+  hoistQuantizationProfile(M);
 
   // Reuse buffers from previous operations.
   if (shouldShareBuffers)
