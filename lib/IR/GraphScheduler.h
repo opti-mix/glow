@@ -78,6 +78,10 @@ class ChildMemSizeBasedScheduler : public Scheduler {
   /// their computation.
   void orderChildNodesAndSchedule(Node *N);
 
+  /// Put QuantizationProfile nodes closer to their inputs to shorten the
+  /// lifetime of those inputs.
+  void scheduleQuantizationProfileNodes();
+
   void scheduleNodes();
 
 public:

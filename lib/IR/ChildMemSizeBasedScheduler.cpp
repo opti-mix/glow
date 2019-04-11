@@ -161,9 +161,54 @@ void ChildMemSizeBasedScheduler::scheduleNodes() {
   }
 }
 
+void ChildMemSizeBasedScheduler::scheduleQuantizationProfileNodes() {
+  // Maps NodeValues to their positions in the schedule.
+  std::unordered_map<const Node *, const NodesPtrList::iterator> nodeToPosition;
+  // Set of quantization profile nodes to be moved.
+  std::vector<NodesPtrList::iterator> quantizationProfiles;
+  quantizationProfiles.reserve(4096);
+  // First pass: Remember for each NodeValue the position in a schedule where
+  // its value is computed.
+  for (auto it = scheduled_.begin(), e = scheduled_.end(); it != e; ++it) {
+    const auto *N = *it;
+    const auto pos = it;
+    // Remember quantization profile nodes to avoid another full scan in the
+    // future.
+    if (isa<QuantizationProfileNode>(N)) {
+      quantizationProfiles.emplace_back(pos);
+    }
+    // Only Save nodes and nodes with results define values.
+    if (!isa<SaveNode>(N) && !N->getNumResults()) {
+      continue;
+    }
+    nodeToPosition.insert({N, pos});
+    // Save nodes define the value of their output.
+    if (auto *save = dyn_cast<SaveNode>(N)) {
+      // Remember the position right after the node that defines a value.
+      nodeToPosition.insert({save->getOutput().getNode(), pos});
+    }
+  }
+  // Second pass: Iterate over all QuantizationProfile nodes and insert them
+  // right after nodes that compute their values.
+  for (auto qpit = quantizationProfiles.begin(), e = quantizationProfiles.end();
+       qpit != e;) {
+    auto pos = *(qpit++);
+    auto *QPN = cast<QuantizationProfileNode>(*pos);
+    auto input = QPN->getInput();
+    const auto insertPos = nodeToPosition.find(input.getNode());
+    assert(insertPos != nodeToPosition.end() &&
+           "Node should have been seen before");
+    // Remove from the old wrong place.
+    scheduled_.erase(pos);
+    // Insert it right after the node that defines a value.
+    scheduled_.insert(std::next(insertPos->second), QPN);
+  }
+}
+
 void ChildMemSizeBasedScheduler::schedule() {
   computeNodeResultsMemorySize();
   computeNodeComputationMaxMemorySize();
   scheduleNodes();
+  scheduleQuantizationProfileNodes();
 }
 } // namespace glow
