@@ -1142,6 +1142,34 @@ llvm::Error ONNXModelLoader::loadTile(const ONNX_NAMESPACE::NodeProto &op,
   return llvm::Error::success();
 }
 
+llvm::Expected<bool>
+ONNXModelLoader::foldOperator(const ONNX_NAMESPACE::NodeProto &op) {
+  const unsigned numInputs = op.input_size();
+  const std::string &typeName = op.op_type();
+  llvm::SmallVector<NodeValue, 4> inputs;
+  inputs.reserve(numInputs);
+  for (unsigned i = 0; i < numInputs; i++) {
+    NodeValue in;
+    ASSIGN_VALUE_OR_RETURN_ERR(in, getNodeValueByName(op.input(i)));
+    inputs.push_back(in);
+  }
+
+  if (!isConstantFoldable(inputs, typeName)) {
+    return false;
+  }
+
+  // Create a temporary lightweight loader and execution engine.
+  ExecutionEngine eeCF;
+  Function *pfuncCF = G_.getParent()->createFunction("eval_const_fold__");
+  ONNXModelLoader loaderCF(*pfuncCF);
+  loaderCF.opsetVersion_ = opsetVersion_;
+  bool fold_status = !errToBool(
+      constantFoldInLoader<ONNXModelLoader, ONNX_NAMESPACE::NodeProto>(
+          eeCF, pfuncCF, loaderCF, this, op));
+  G_.getParent()->eraseFunction(pfuncCF);
+  return fold_status;
+}
+
 llvm::Error ONNXModelLoader::loadOperator(const ONNX_NAMESPACE::NodeProto &op) {
   ArgumentDictionaryTy dict = loadArgumentMap(op);
   const std::string &typeName = op.op_type();
@@ -1246,6 +1274,13 @@ llvm::Error ONNXModelLoader::loadNetwork(ONNX_NAMESPACE::GraphProto &net) {
   /// Load the network operators:
   for (int i = 0; i < net.node_size(); i++) {
     auto &op = net.node(i);
+    if (getConstantFoldLoaderOpsFlag()) {
+      auto foldstatus = foldOperator(op);
+      if (foldstatus && foldstatus.get()) {
+        // folded successfully.
+        continue;
+      }
+    }
     RETURN_IF_ERR(loadOperator(op));
   }
 

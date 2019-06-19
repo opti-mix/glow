@@ -18,6 +18,7 @@
 #define GLOW_IMPORTER_PROTOBUFLOADER_H
 
 #include "glow/Base/Tensor.h"
+#include "glow/ExecutionEngine/ExecutionEngine.h"
 #include "glow/Graph/Graph.h"
 
 #include "glow/Support/Error.h"
@@ -37,6 +38,12 @@
 #define MAX_PROTO_SIZE 0x7FFFFFFF
 
 namespace glow {
+
+// Enables or disables constant-folding of Loader Ops with \p flag.
+void setConstantFoldLoaderOpsFlag(bool flag);
+
+// Returns true if constant-folding for loader Ops is enabled.
+bool getConstantFoldLoaderOpsFlag();
 
 /// Returns true iff all elements of \p a are the same.
 bool isArrayConstant(const llvm::ArrayRef<size_t> a);
@@ -181,7 +188,48 @@ public:
   /// \returns the Placeholder for the external output with \p name.
   /// \pre outputVarsByName_.find(name) != outputVarsByName_.end()
   llvm::Expected<Placeholder *> getOutputByName(llvm::StringRef name) const;
+
+  /// \returns True if the operator with name \p typeName having input node
+  /// list as \p inputs is constant foldable.
+  bool isConstantFoldable(llvm::SmallVector<NodeValue, 4> &inputs,
+                          std::string typeName) const;
 };
+
+/// \returns success if the folding of operator \p op in the loader
+/// \p pLoader is successful. The folding utility uses temporary
+/// Execution Engine eeCF, loader \p loaderCF, and associated temporary
+/// function \p pFuncCF.
+template <class LoaderType, class OpType>
+llvm::Error constantFoldInLoader(ExecutionEngine &eeCF, Function *pFuncCF,
+                                 LoaderType &loaderCF, LoaderType *pLoader,
+                                 const OpType &op) {
+  PlaceholderBindings bindingCF;
+  std::vector<Tensor *> pTensorVec;
+  Module *pModCF = pFuncCF->getParent();
+  for (unsigned i = 0; i < op.input_size(); i++) {
+    Constant *pConst = pModCF->getConstantByName(op.input(i));
+    RETURN_ERR_IF_NOT(pConst, "No constant found");
+    loaderCF.nodeValueByName_[op.input(i)] = pConst->getOutput();
+  }
+  RETURN_IF_ERR(loaderCF.loadOperator(op));
+  for (int i = 0; i < op.output_size(); i++) {
+    const auto &outputName = op.output(i);
+    NodeValue r;
+    ASSIGN_VALUE_OR_RETURN_ERR(r, loaderCF.getNodeValueByName(outputName));
+    SaveNode *SN = pFuncCF->createSave("save_" + outputName, r);
+    auto *result = bindingCF.allocate(SN->getPlaceholder());
+    pTensorVec.push_back(result);
+  }
+  eeCF.compile(CompilationMode::Infer, pFuncCF);
+  eeCF.run(bindingCF);
+
+  // Using the graph output, place constant nodes in the original graph.
+  for (int i = 0; i < op.output_size(); i++) {
+    RETURN_IF_ERR(pLoader->createAndRegisterConstant(
+        op.output(i), std::move(*pTensorVec[i])));
+  }
+  return llvm::Error::success();
+}
 
 } // namespace glow
 

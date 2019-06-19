@@ -62,6 +62,15 @@ static bool shouldDeleteNode(Node *N) {
   return true;
 }
 
+static bool shouldDeleteConstants(Function *F) {
+  Module *pMod = F->getParent();
+  bool state = true;
+  for (auto F : pMod->getFunctions()) {
+    state = state & (F->getState() >= FunctionState::FuncLoaded);
+  }
+  return state;
+}
+
 bool DCE::run(Function *F) {
   LOG_SCOPE(F->getLogContext(), getName());
 
@@ -98,6 +107,9 @@ bool DCE::run(Function *F) {
       break;
     }
   }
+
+  if (!shouldDeleteConstants(F))
+    return changed;
 
   // Delete unused Constants.
   for (auto it = consts.begin(), e = consts.end(); it != e;) {
@@ -2746,7 +2758,7 @@ void glow::fold(Function *F, CompilationMode mode) {
 
 void glow::optimize(Function *F, CompilationContext &cctx) {
   LOG_SCOPE(F->getLogContext(), "glow::optimize")
-
+  F->setState(FunctionState::FuncLoaded);
   // Optimize may be called after backend specific transformations and some
   // nodes may have become unused. It is a good idea to remove them, before
   // proceeding with any further optimizations.

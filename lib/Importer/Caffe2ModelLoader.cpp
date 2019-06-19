@@ -527,6 +527,35 @@ llvm::Error Caffe2ModelLoader::loadConvQuantized(const caffe2::OperatorDef &op,
   return llvm::Error::success();
 }
 
+llvm::Expected<bool>
+Caffe2ModelLoader::foldOperator(const caffe2::OperatorDef &op) {
+  const unsigned numInputs = op.input_size();
+  const std::string &typeName = op.type();
+  llvm::SmallVector<NodeValue, 4> inputs;
+  inputs.reserve(numInputs);
+  for (unsigned i = 0; i < numInputs; i++) {
+    NodeValue in;
+    ASSIGN_VALUE_OR_RETURN_ERR(in, getNodeValueByName(op.input(i)));
+    inputs.push_back(in);
+  }
+
+  if (!isConstantFoldable(inputs, typeName)) {
+    return false;
+  }
+
+  // Create a temporary lightweight loader, execution engine and add
+  // foldable constants to current loader using the temporary loader
+  // loaderCF
+  ExecutionEngine eeCF;
+  Function *pfuncCF = G_.getParent()->createFunction("eval_const_fold__");
+  Caffe2ModelLoader loaderCF(*pfuncCF, nullptr);
+  bool fold_status =
+      !errToBool(constantFoldInLoader<Caffe2ModelLoader, caffe2::OperatorDef>(
+          eeCF, pfuncCF, loaderCF, this, op));
+  G_.getParent()->eraseFunction(pfuncCF);
+  return fold_status;
+}
+
 llvm::Error Caffe2ModelLoader::loadOperator(const caffe2::OperatorDef &op) {
   ArgumentDictionaryTy dict = loadArgumentMap(op);
   const std::string &typeName = op.type();
@@ -1337,6 +1366,13 @@ llvm::Error Caffe2ModelLoader::loadNetwork(caffe2::NetDef &net) {
   /// Load the network operators:
   for (int i = 0; i < net.op_size(); i++) {
     auto &op = net.op(i);
+    if (getConstantFoldLoaderOpsFlag()) {
+      auto foldstatus = foldOperator(op);
+      if (foldstatus && foldstatus.get()) {
+        // folded successfully.
+        continue;
+      }
+    }
     RETURN_IF_ERR(loadOperator(op));
   }
 

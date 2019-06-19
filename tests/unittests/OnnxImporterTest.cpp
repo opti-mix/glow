@@ -27,6 +27,174 @@
 
 using namespace glow;
 
+#include <fstream>
+using namespace std;
+
+llvm::Expected<ONNX_NAMESPACE::ModelProto>
+loadProto(const std::string &filename) {
+  std::ifstream ff(filename, std::ios::in | std::ios::binary);
+  RETURN_ERR_IF_NOT(ff, "Can't find the model or network files.",
+                    GlowErr::ErrorCode::MODEL_LOADER_INVALID_PROTOBUF);
+  if (filename.find(".onnxtxt") != std::string::npos) {
+    std::string str((std::istreambuf_iterator<char>(ff)),
+                    std::istreambuf_iterator<char>());
+    ONNX_NAMESPACE::ModelProto MP;
+    bool parseNet = google::protobuf::TextFormat::ParseFromString(str, &MP);
+    RETURN_ERR_IF_NOT(parseNet, "Failed to parse ModelProto",
+                      GlowErr::ErrorCode::MODEL_LOADER_INVALID_PROTOBUF);
+    return MP;
+  }
+  RETURN_ERR("Can't load proto file");
+}
+
+llvm::Expected<bool> saveProto(const std::string &filename,
+                               ONNX_NAMESPACE::ModelProto &model) {
+  std::ofstream ff(filename, std::ios::out);
+  RETURN_ERR_IF_NOT(ff, "Can't write the proto file.",
+                    GlowErr::ErrorCode::RUNTIME_ERROR);
+  if (filename.find(".onnxtxt") != std::string::npos) {
+    std::string onnx_message = model.DebugString();
+    ff << onnx_message;
+    ff.close();
+    return true;
+  }
+  ff.close();
+  return false;
+}
+
+llvm::Expected<bool>
+replacePlaceholderWithConstant(ONNX_NAMESPACE::ModelProto &model,
+                               llvm::ArrayRef<const char *> tensorNames,
+                               llvm::ArrayRef<Tensor *> tensors) {
+  ONNX_NAMESPACE::NodeProto np;
+  ONNX_NAMESPACE::GraphProto *gp = model.mutable_graph();
+  RETURN_ERR_IF_NOT(gp, "Can't get mutable graph.",
+                    GlowErr::ErrorCode::RUNTIME_ERROR);
+  for (size_t i = 0; i < tensorNames.size(); i++) {
+    for (int j = 0; j < gp->input_size(); j++) {
+      ONNX_NAMESPACE::ValueInfoProto *pvalueInfo = gp->mutable_input(j);
+      const std::string &inputName = pvalueInfo->name();
+      if (inputName != tensorNames[i]) {
+        continue;
+      }
+      std::string new_name = "dummy_input" + std::to_string(i);
+      pvalueInfo->set_name(new_name);
+      auto RH = tensors[i]->getHandle<>();
+      ONNX_NAMESPACE::TensorProto *tp = gp->add_initializer();
+      tp->set_name(tensorNames[i]);
+      for (int k = 0; k < tensors[i]->dims().size(); k++) {
+        tp->add_dims(tensors[i]->dims()[k]);
+      }
+      switch (RH.getElementType()) {
+      case ElemKind::FloatTy:
+        tp->set_data_type(ONNX_NAMESPACE::TensorProto::FLOAT);
+        for (int k = 0; k < tensors[i]->size(); k++) {
+          tp->add_float_data(RH.raw(k));
+        }
+        break;
+      case ElemKind::Int64ITy:
+        tp->set_data_type(ONNX_NAMESPACE::TensorProto::INT64);
+        for (int k = 0; k < tensors[i]->size(); k++) {
+          tp->add_int64_data(RH.raw(k));
+        }
+        break;
+      case ElemKind::Int32ITy:
+        tp->set_data_type(ONNX_NAMESPACE::TensorProto::INT32);
+        for (int k = 0; k < tensors[i]->size(); k++) {
+          tp->add_int32_data(RH.raw(k));
+        }
+        break;
+      default:
+        std::cout << "Unsupported datatype";
+        return false;
+      }
+    }
+  }
+  gp->clear_input();
+  return true;
+}
+
+bool checkConstFoldedOutput(std::string NetFilename,
+                            llvm::ArrayRef<const char *> tensorNames,
+                            llvm::ArrayRef<Tensor *> tensors,
+                            llvm::ArrayRef<Tensor *> ref_tensors) {
+  ONNX_NAMESPACE::ModelProto modelDef;
+  std::string CFNetFilename = "dummy.onnxtxt";
+  auto lhsOrErrV = loadProto(NetFilename);
+  static_assert(IsLLVMExpected<decltype(lhsOrErrV)>(),
+                "Expected value to be a llvm::Expected");
+  if (!lhsOrErrV) {
+    return false;
+  }
+  modelDef = std::move(lhsOrErrV.get());
+  if (!replacePlaceholderWithConstant(modelDef, tensorNames, tensors))
+    return false;
+  if (!saveProto(CFNetFilename, modelDef))
+    return false;
+  setConstantFoldLoaderOpsFlag(true);
+  PlaceholderBindings binding_temp;
+  ExecutionEngine ee_temp;
+  Module &mod_temp = ee_temp.getModule();
+  Function *pfunc_temp = mod_temp.createFunction("temp");
+  ONNXModelLoader onnxLD(CFNetFilename, {}, {}, *pfunc_temp);
+  setConstantFoldLoaderOpsFlag(false);
+
+  const llvm::StringMap<Placeholder *> pOut = onnxLD.getOutputVarsMapping();
+  for (int i = 0; i < modelDef.graph().output_size(); i++) {
+    NodeValue nv;
+    auto lhsOrErrV =
+        onnxLD.getNodeValueByName(modelDef.graph().output(i).name());
+    static_assert(IsLLVMExpected<decltype(lhsOrErrV)>(),
+                  "Expected value to be a llvm::Expected");
+    if (lhsOrErrV) {
+      nv = std::move(lhsOrErrV.get());
+      switch (nv.getElementType()) {
+      case ElemKind::FloatTy:
+        EXPECT_TRUE(ref_tensors[i]->getHandle().dims() ==
+                    llvm::dyn_cast<Constant>(nv.getNode())->getHandle().dims());
+        for (int kk = 0; kk < ref_tensors[i]->getHandle().getType().size();
+             kk++) {
+          EXPECT_EQ(
+              ref_tensors[i]->getHandle().raw(kk),
+              llvm::dyn_cast<Constant>(nv.getNode())->getHandle().raw(kk));
+        }
+        break;
+      case ElemKind::Int64ITy:
+        EXPECT_TRUE(ref_tensors[i]->getHandle<int64_t>().dims() ==
+                    llvm::dyn_cast<Constant>(nv.getNode())
+                        ->getHandle<int64_t>()
+                        .dims());
+        for (int kk = 0;
+             kk < ref_tensors[i]->getHandle<int64_t>().getType().size(); kk++) {
+          EXPECT_EQ(ref_tensors[i]->getHandle<int64_t>().raw(kk),
+                    llvm::dyn_cast<Constant>(nv.getNode())
+                        ->getHandle<int64_t>()
+                        .raw(kk));
+        }
+        break;
+      case ElemKind::Int32ITy:
+        EXPECT_TRUE(ref_tensors[i]->getHandle<int32_t>().dims() ==
+                    llvm::dyn_cast<Constant>(nv.getNode())
+                        ->getHandle<int32_t>()
+                        .dims());
+        for (int kk = 0;
+             kk < ref_tensors[i]->getHandle<int32_t>().getType().size(); kk++) {
+          EXPECT_EQ(ref_tensors[i]->getHandle<int32_t>().raw(kk),
+                    llvm::dyn_cast<Constant>(nv.getNode())
+                        ->getHandle<int32_t>()
+                        .raw(kk));
+        }
+        break;
+      default:
+        return false;
+      }
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
 template <class OpType>
 static void
 importArithMultiBroadcastTest(std::string fileName,
@@ -43,16 +211,15 @@ importArithMultiBroadcastTest(std::string fileName,
   Placeholder *graphOutputVar;
   // Destroy the loader after the graph is loaded since the following execution
   // will not depend on anyting from the loader.
+  Tensor data;
+  getNCHWData(&data, inputShape[0], inputShape[1], inputShape[2],
+              inputShape[3]);
   {
-    Tensor data;
-    getNCHWData(&data, inputShape[0], inputShape[1], inputShape[2],
-                inputShape[3]);
     ONNXModelLoader onnxLD(NetFilename, {"data"}, {&data.getType()}, *F);
     graphOutputVar = EXIT_ON_ERR(onnxLD.getSingleOutput());
     bindings.allocate(mod.getPlaceholders());
     updateInputPlaceholdersByName(bindings, &mod, {"data"}, {&data});
   }
-
   // ONNX importer loads an arithmetic node and inserts:
   // - a Reshape node for each broadcasted operand
   // - a Tile node for each boardcasted dimension
@@ -112,6 +279,9 @@ importArithMultiBroadcastTest(std::string fileName,
   for (size_t i = 0; i < result.getType().size(); i++) {
     EXPECT_FLOAT_EQ(result.raw(i), expectedValues[i]);
   }
+  // Constant Folding Test
+  EXPECT_TRUE(checkConstFoldedOutput(NetFilename, {"data"}, {&data},
+                                     {bindings.get(graphOutputVar)}));
 }
 
 /// Test loading LeakyRelu op from an ONNX model.
@@ -303,9 +473,9 @@ static void testImportPRelu(std::string filename,
   Placeholder *graphOutputVar;
   // Destroy the loader after the graph is loaded since the following execution
   // will not depend on anyting from the loader.
+  Tensor data(ElemKind::FloatTy, inputShape);
+  data.getHandle().randomize(-4.0, 4.0, mod.getPRNG());
   {
-    Tensor data(ElemKind::FloatTy, inputShape);
-    data.getHandle().randomize(-4.0, 4.0, mod.getPRNG());
     ONNXModelLoader onnxLoader(NetFileName, {"data"}, {&data.getType()}, *F);
     graphOutputVar = EXIT_ON_ERR(onnxLoader.getSingleOutput());
     bindings.allocate(mod.getPlaceholders());
@@ -326,6 +496,10 @@ static void testImportPRelu(std::string filename,
                         std::max<float>(0, dataH.raw(i));
     EXPECT_FLOAT_EQ(result.raw(i), expectedVal);
   }
+
+  // Constant Folding Test
+  EXPECT_TRUE(checkConstFoldedOutput(NetFileName, {"data"}, {&data},
+                                     {bindings.get(graphOutputVar)}));
 }
 
 TEST(onnx, importPreluSlopeHasSameShape) {
@@ -492,9 +666,9 @@ static void averagePoolTestHelper(std::string &filename,
   Placeholder *graphOutputVar;
   // Destroy the loader after the graph is loaded since the following execution
   // will not depend on anyting from the loader.
+  Tensor data;
+  getNCHWData(&data, 1, 1, 3, 3);
   {
-    Tensor data;
-    getNCHWData(&data, 1, 1, 3, 3);
     ONNXModelLoader onnxLD(NetFilename, {"x"}, {&data.getType()}, *F);
     graphOutputVar = EXIT_ON_ERR(onnxLD.getSingleOutput());
     bindings.allocate(mod.getPlaceholders());
@@ -524,6 +698,10 @@ static void averagePoolTestHelper(std::string &filename,
   for (size_t i = 0, e = expectedValues.size(); i < e; i++) {
     EXPECT_FLOAT_EQ(result.raw(i), expectedValues[i]);
   }
+
+  // Constant Folding Test
+  EXPECT_TRUE(checkConstFoldedOutput(NetFilename, {"x"}, {&data},
+                                     {bindings.get(graphOutputVar)}));
 }
 
 /// Test loading AveragePool op from a ONNX model.
@@ -585,10 +763,9 @@ TEST(onnx, reduceMean4Dto3D) {
 
   PlaceholderBindings bindings;
   Placeholder *output;
+  Tensor x(ElemKind::FloatTy, {2, 2, 2, 2});
+  x.getHandle() = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
   {
-    Tensor x(ElemKind::FloatTy, {2, 2, 2, 2});
-    x.getHandle() = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
-
     ONNXModelLoader onnxLD(netFilename, {"x"}, {&x.getType()}, *F);
     output = EXIT_ON_ERR(onnxLD.getSingleOutput());
     bindings.allocate(mod.getPlaceholders());
@@ -610,6 +787,10 @@ TEST(onnx, reduceMean4Dto3D) {
   for (size_t i = 0; i < 8; i++) {
     EXPECT_FLOAT_EQ(result.raw(i), expectedValues[i]);
   }
+
+  // Constant Folding Test
+  EXPECT_TRUE(
+      checkConstFoldedOutput(netFilename, {"x"}, {&x}, {bindings.get(output)}));
 }
 
 /// Test loading ReduceMean op from a ONNX model.
@@ -624,9 +805,10 @@ TEST(onnx, reduceMean4Dto4D) {
 
   PlaceholderBindings bindings;
   Placeholder *output;
+  Tensor x(ElemKind::FloatTy, {2, 2, 2, 2});
+  x.getHandle() = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+
   {
-    Tensor x(ElemKind::FloatTy, {2, 2, 2, 2});
-    x.getHandle() = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
 
     ONNXModelLoader onnxLD(netFilename, {"x"}, {&x.getType()}, *F);
     output = EXIT_ON_ERR(onnxLD.getSingleOutput());
@@ -649,6 +831,10 @@ TEST(onnx, reduceMean4Dto4D) {
   for (size_t i = 0; i < 8; i++) {
     EXPECT_FLOAT_EQ(result.raw(i), expectedValues[i]);
   }
+
+  // Constant Folding Test
+  EXPECT_TRUE(
+      checkConstFoldedOutput(netFilename, {"x"}, {&x}, {bindings.get(output)}));
 }
 
 /// Test loading ReduceSum op from a ONNX model.
@@ -663,9 +849,10 @@ TEST(onnx, reduceSum4D) {
 
   PlaceholderBindings bindings;
   Placeholder *output;
+  Tensor x(ElemKind::FloatTy, {2, 2, 2, 2});
+  x.getHandle() = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+
   {
-    Tensor x(ElemKind::FloatTy, {2, 2, 2, 2});
-    x.getHandle() = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
 
     ONNXModelLoader onnxLD(netFilename, {"x"}, {&x.getType()}, *F);
     output = EXIT_ON_ERR(onnxLD.getSingleOutput());
@@ -685,6 +872,9 @@ TEST(onnx, reduceSum4D) {
   for (size_t i = 0; i < 8; i++) {
     EXPECT_FLOAT_EQ(result.raw(i), expectedValues[i]);
   }
+  // Constant Folding Test
+  EXPECT_TRUE(
+      checkConstFoldedOutput(netFilename, {"x"}, {&x}, {bindings.get(output)}));
 }
 
 /// Test loading ReduceMean op from a ONNX model.
@@ -700,9 +890,10 @@ TEST(onnx, reduceMean2AvgPoolKeepDims) {
 
   PlaceholderBindings bindings;
   Placeholder *output;
+  Tensor x(ElemKind::FloatTy, {2, 2, 2, 2});
+  x.getHandle() = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+
   {
-    Tensor x(ElemKind::FloatTy, {2, 2, 2, 2});
-    x.getHandle() = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
 
     ONNXModelLoader onnxLD(netFilename, {"x"}, {&x.getType()}, *F);
     output = EXIT_ON_ERR(onnxLD.getSingleOutput());
@@ -728,6 +919,9 @@ TEST(onnx, reduceMean2AvgPoolKeepDims) {
   for (size_t i = 0; i < 4; i++) {
     EXPECT_FLOAT_EQ(result.raw(i), expectedValues[i]);
   }
+  // Constant Folding Test
+  EXPECT_TRUE(
+      checkConstFoldedOutput(netFilename, {"x"}, {&x}, {bindings.get(output)}));
 }
 
 /// Test loading ReduceMean op from a ONNX model.
@@ -744,9 +938,10 @@ TEST(onnx, reduceMean2AvgPoolNoKeepDims) {
 
   PlaceholderBindings bindings;
   Placeholder *output;
+  Tensor x(ElemKind::FloatTy, {2, 2, 2, 2});
+  x.getHandle() = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+
   {
-    Tensor x(ElemKind::FloatTy, {2, 2, 2, 2});
-    x.getHandle() = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
 
     ONNXModelLoader onnxLD(netFilename, {"x"}, {&x.getType()}, *F);
     output = EXIT_ON_ERR(onnxLD.getSingleOutput());
@@ -772,6 +967,10 @@ TEST(onnx, reduceMean2AvgPoolNoKeepDims) {
   for (size_t i = 0; i < 4; i++) {
     EXPECT_FLOAT_EQ(result.raw(i), expectedValues[i]);
   }
+
+  // Constant Folding Test
+  EXPECT_TRUE(
+      checkConstFoldedOutput(netFilename, {"x"}, {&x}, {bindings.get(output)}));
 }
 
 /// Test loading SpaceToDepth op from an ONNX model.
@@ -816,9 +1015,10 @@ TEST(onnx, importClip) {
 
   PlaceholderBindings bindings;
   Placeholder *output;
+  Tensor x(ElemKind::FloatTy, {3, 3});
+  x.getHandle() = {1, 2, 3, 40, 5, 6, 7, 8, 90};
+
   {
-    Tensor x(ElemKind::FloatTy, {3, 3});
-    x.getHandle() = {1, 2, 3, 40, 5, 6, 7, 8, 90};
     ONNXModelLoader onnxLD(netFilename, {"x"}, {&x.getType()}, *F);
     output = EXIT_ON_ERR(onnxLD.getSingleOutput());
     bindings.allocate(mod.getPlaceholders());
@@ -838,6 +1038,10 @@ TEST(onnx, importClip) {
   for (size_t i = 0; i < 3 * 3; i++) {
     EXPECT_FLOAT_EQ(result.raw(i), expectedValues[i]);
   }
+
+  // Constant Folding Test
+  EXPECT_TRUE(
+      checkConstFoldedOutput(netFilename, {"x"}, {&x}, {bindings.get(output)}));
 }
 
 /// Test loading BatchMatMul op from an ONNX model.
@@ -850,14 +1054,20 @@ TEST(onnx, importBatchMatMul) {
 
   PlaceholderBindings bindings;
   Placeholder *output;
+  Tensor inputs_0(ElemKind::FloatTy, {20, 40, 7});
+  Tensor inputs_1(ElemKind::FloatTy, {20, 7, 40});
+  auto data_0 = inputs_0.getHandle();
+  auto data_1 = inputs_1.getHandle();
+  // Fill inputs with random positive values.
+  data_0.randomize(0.0, 5.0, mod.getPRNG());
+  data_1.randomize(1.0, 2.0, mod.getPRNG());
   {
-    Tensor inputs_0(ElemKind::FloatTy, {20, 40, 7});
-    Tensor inputs_1(ElemKind::FloatTy, {20, 7, 40});
     ONNXModelLoader onnxLD(netFilename, {"inputs_0", "inputs_1"},
                            {&inputs_0.getType(), &inputs_1.getType()}, *F);
     output = EXIT_ON_ERR(onnxLD.getSingleOutput());
-
     bindings.allocate(mod.getPlaceholders());
+    updateInputPlaceholdersByName(bindings, &mod, {"inputs_0", "inputs_1"},
+                                  {&inputs_0, &inputs_1});
   }
   auto *res = bindings.get(output);
   EE.compile(CompilationMode::Infer, F);
@@ -897,6 +1107,10 @@ TEST(onnx, importBatchMatMul) {
       ASSERT_TRUE(slice0);
     }
   }
+  // Constant Folding Test
+  EXPECT_TRUE(checkConstFoldedOutput(netFilename, {"inputs_0", "inputs_1"},
+                                     {&inputs_0, &inputs_1},
+                                     {bindings.get(output)}));
 }
 
 /// Test loading BatchBoxCox op from an ONNX model.
@@ -973,6 +1187,11 @@ TEST(onnx, importBatchBoxCox) {
       EXPECT_FLOAT_EQ(y, result.at({i, j}));
     }
   }
+
+  // Constant Folding Test
+  EXPECT_TRUE(checkConstFoldedOutput(
+      netFilename, {"data", "lambda1", "lambda2"}, {&data, &lambda1, &lambda2},
+      {bindings.get(output)}));
 }
 
 /// Test loading DotProduct op from an ONNX model.
@@ -1015,13 +1234,13 @@ TEST(onnx, importSumN) {
 
   PlaceholderBindings bindings;
   Placeholder *output;
+  Tensor i0(ElemKind::FloatTy, {3});
+  i0.getHandle() = {1, 2, 3};
+  Tensor i1(ElemKind::FloatTy, {3});
+  i1.getHandle() = {4, 5, 6};
+  Tensor i2(ElemKind::FloatTy, {3});
+  i2.getHandle() = {7, 8, 9};
   {
-    Tensor i0(ElemKind::FloatTy, {3});
-    i0.getHandle() = {1, 2, 3};
-    Tensor i1(ElemKind::FloatTy, {3});
-    i1.getHandle() = {4, 5, 6};
-    Tensor i2(ElemKind::FloatTy, {3});
-    i2.getHandle() = {7, 8, 9};
 
     ONNXModelLoader onnxLD(netFilename, {"i0", "i1", "i2"},
                            {&i0.getType(), &i1.getType(), &i2.getType()}, *F);
@@ -1060,6 +1279,10 @@ TEST(onnx, importSumN) {
         llvm::dyn_cast<ReshapeNode>(concat->getNthInput(i).getNode());
     ASSERT_TRUE(reshape);
   }
+
+  // Constant Folding Test
+  EXPECT_TRUE(checkConstFoldedOutput(netFilename, {"i0", "i1", "i2"},
+                                     {&i0, &i1, &i2}, {bindings.get(output)}));
 }
 
 /// Test loading Sum with one input and one output
@@ -1072,9 +1295,10 @@ TEST(onnx, importSum1) {
 
   PlaceholderBindings bindings;
   Placeholder *output;
+  Tensor x(ElemKind::FloatTy, {3});
+  x.getHandle() = {1, 2, 3};
+
   {
-    Tensor x(ElemKind::FloatTy, {3});
-    x.getHandle() = {1, 2, 3};
     ONNXModelLoader onnxLD(netFilename, {"x"}, {&x.getType()}, *F);
     output = EXIT_ON_ERR(onnxLD.getSingleOutput());
 
@@ -1100,6 +1324,10 @@ TEST(onnx, importSum1) {
   ASSERT_EQ(F->getNodes().size(), 1);
   auto *save = getSaveNodeFromDest(output);
   ASSERT_TRUE(llvm::isa<Placeholder>(save->getInput().getNode()));
+
+  // Constant Folding Test
+  EXPECT_TRUE(
+      checkConstFoldedOutput(netFilename, {"x"}, {&x}, {bindings.get(output)}));
 }
 
 /// Test loading LengthsToRanges from an ONNX model.
@@ -1443,6 +1671,33 @@ TEST(onnx, gatherRanges) {
   EXPECT_TRUE(gatherRanges->getLengths().dims().equals({2}));
 }
 
+/// Test loading Gather ops with constant folding from an ONNX model.
+TEST(onnx, gatherOpConstantFoldingAndReshape) {
+  // This test verifies that Gather gets constant-folded, so that the argument
+  // of the reshape becomes constant.
+  ExecutionEngine EE;
+  auto &mod = EE.getModule();
+  std::string netFilename(
+      GLOW_DATA_PATH "tests/models/onnxModels/gatherConstantFolding.onnxtxt");
+  PlaceholderBindings bindings;
+  auto *F = mod.createFunction("main");
+  Placeholder *output;
+  Tensor data(ElemKind::FloatTy, {1, 2, 4, 3});
+  setConstantFoldLoaderOpsFlag(true);
+  {
+    ONNXModelLoader onnxLD(netFilename, {"input"}, {&data.getType()}, *F);
+    output = EXIT_ON_ERR(onnxLD.getSingleOutput());
+    bindings.allocate(mod.getPlaceholders());
+  }
+  EE.compile(CompilationMode::Infer, F);
+  EE.run(bindings);
+  setConstantFoldLoaderOpsFlag(false);
+
+  auto result = bindings.get(output)->getHandle();
+  std::vector<size_t> expectedDims = {1, 4, 3, 2};
+  EXPECT_TRUE(result.dims().vec() == expectedDims);
+}
+
 static void importSliceTest(std::string fileName, const char *inputName,
                             const llvm::ArrayRef<size_t> inputShape,
                             const llvm::ArrayRef<size_t> starts,
@@ -1457,10 +1712,10 @@ static void importSliceTest(std::string fileName, const char *inputName,
   Placeholder *graphOutputVar;
   // Destroy the loader after the graph is loaded since the following execution
   // will not depend on anyting from the loader.
+  Tensor data;
+  getNCHWData(&data, inputShape[0], inputShape[1], inputShape[2],
+              inputShape[3]);
   {
-    Tensor data;
-    getNCHWData(&data, inputShape[0], inputShape[1], inputShape[2],
-                inputShape[3]);
     ONNXModelLoader onnxLD(NetFilename, {inputName}, {&data.getType()}, *F);
     graphOutputVar = EXIT_ON_ERR(onnxLD.getSingleOutput());
     bindings.allocate(mod.getPlaceholders());
@@ -1497,6 +1752,10 @@ static void importSliceTest(std::string fileName, const char *inputName,
       }
     }
   }
+
+  // Constant Folding Test
+  EXPECT_TRUE(checkConstFoldedOutput(NetFilename, {inputName}, {&data},
+                                     {bindings.get(graphOutputVar)}));
 }
 
 TEST(onnx, importSliceDynamicNoAxes) {
@@ -1762,10 +2021,10 @@ TEST(onnx, shape) {
 
   PlaceholderBindings bindings;
   Placeholder *output;
-  {
-    Tensor x(ElemKind::FloatTy, {2, 2, 2, 2});
-    x.getHandle() = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+  Tensor x(ElemKind::FloatTy, {2, 2, 2, 2});
+  x.getHandle() = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
 
+  {
     ONNXModelLoader onnxLD(netFilename, {"input"}, {&x.getType()}, *F);
     output = EXIT_ON_ERR(onnxLD.getSingleOutput());
     bindings.allocate(mod.getPlaceholders());
@@ -1784,6 +2043,10 @@ TEST(onnx, shape) {
   for (size_t i = 0; i < expectedValues.size(); i++) {
     EXPECT_EQ(result.raw(i), expectedValues[i]);
   }
+
+  // Constant Folding Test
+  EXPECT_TRUE(checkConstFoldedOutput(netFilename, {"input"}, {&x},
+                                     {bindings.get(output)}));
 }
 
 TEST(onnx, tile) {

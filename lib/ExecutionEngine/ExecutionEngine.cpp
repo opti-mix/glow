@@ -244,6 +244,7 @@ void ExecutionEngine::compile(CompilationMode mode, Function *F,
 void ExecutionEngine::compile(Function *F, CompilationContext &cctx,
                               bool clearOtherFunctions) {
   llvm::StringRef name = F->getName();
+  F->setState(FunctionState::FuncLoaded);
 
   if (clearOtherFunctions) {
     clear();

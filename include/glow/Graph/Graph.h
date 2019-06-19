@@ -47,6 +47,15 @@ using UnsignedArrayRef = llvm::ArrayRef<size_t>;
 /// Map from original Nodes to cloned Nodes.
 using NodeMap = llvm::DenseMap<Node *, Node *>;
 
+/// State of a function.
+enum class FunctionState {
+  FuncCreated,
+  FuncLoaded,
+  FuncCompiled,
+  FuncOptimized,
+  FuncExecuted,
+};
+
 class Module final {
   /// Stores the functions in the module.
   FunctionList functions_;
@@ -228,9 +237,14 @@ class Function final : public Named {
   /// The log context associated with this function.
   LogContext logCtx_;
 
+  FunctionState state_;
+
 public:
   Function(Module *parent, llvm::StringRef Name = {})
-      : Named(Name), parent_(parent) {}
+      : Named(Name), parent_(parent), state_(FunctionState::FuncCreated) {}
+
+  void setState(FunctionState state) { state_ = state; }
+  FunctionState getState() { return state_; }
 
   ~Function();
 

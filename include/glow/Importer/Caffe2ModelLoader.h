@@ -60,6 +60,9 @@ class Caffe2ModelLoader
   /// in the network.
   llvm::Error loadOperator(const caffe2::OperatorDef &op);
 
+  /// \returns True if the operator\ op has been successfully folded.
+  llvm::Expected<bool> foldOperator(const caffe2::OperatorDef &op);
+
   /// Load the Conv or ConvRelu operators.
   llvm::Error loadConv(const caffe2::OperatorDef &op,
                        ArgumentDictionaryTy &dict);
@@ -106,6 +109,12 @@ class Caffe2ModelLoader
                     llvm::Error *errPtr = nullptr);
 
   friend class ONNXIFIModelLoader;
+
+  template <class LoaderType, class OpType>
+  friend llvm::Error
+  constantFoldInLoader(ExecutionEngine &eeCF, Function *pFuncCF,
+                       LoaderType &loaderCF, LoaderType *pLoader,
+                       const OpType &op);
 
 public:
   /// Loads the caffe2 model that's represented by a network description file,

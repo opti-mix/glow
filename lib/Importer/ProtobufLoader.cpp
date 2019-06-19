@@ -15,16 +15,51 @@
  */
 
 #include "glow/Importer/ProtobufLoader.h"
-
+#include "llvm/Support/CommandLine.h"
 #include <string>
 
 namespace glow {
+
+llvm::cl::OptionCategory loaderOptCat("Model Loader Options");
+
+static llvm::cl::opt<bool> isConstFoldLoaderOps(
+    "const-fold-ops",
+    llvm::cl::desc(
+        "Performs constant folding on ONNX and Caffe Operators while loading."),
+    llvm::cl::init(false), llvm::cl::cat(loaderOptCat));
 
 bool isArrayConstant(llvm::ArrayRef<size_t> a) {
   for (size_t i = 1; i < a.size(); i++)
     if (a[0] != a[i])
       return false;
   return true;
+}
+
+void setConstantFoldLoaderOpsFlag(bool flag) { isConstFoldLoaderOps = flag; }
+
+bool getConstantFoldLoaderOpsFlag() { return isConstFoldLoaderOps; }
+
+bool ProtobufLoader::isConstantFoldable(llvm::SmallVector<NodeValue, 4> &inputs,
+                                        std::string typeName) const {
+  int numInputs = inputs.size();
+  if (!getConstantFoldLoaderOpsFlag()) {
+    return false;
+  }
+  // fold_unsupported_types: List of typenames unsupported for folding.
+  std::string fold_unsupported_types[] = {"Constant"};
+  std::string *foo = std::find(std::begin(fold_unsupported_types),
+                               std::end(fold_unsupported_types), typeName);
+  // Early exit if folding is not supported for current operator.
+  if (foo == std::end(fold_unsupported_types)) {
+    // If all the inputs to the operator are constant this op can be folded.
+    bool isConstFoldCandidate = true;
+    for (int i = 0; (i < numInputs) && isConstFoldCandidate; i++) {
+      isConstFoldCandidate &=
+          (inputs[i].getNode()->getKind() == Kinded::Kind::ConstantKind);
+    }
+    return isConstFoldCandidate;
+  }
+  return false;
 }
 
 Constant *ProtobufLoader::getConstantByNameOrNull(llvm::StringRef name) const {
