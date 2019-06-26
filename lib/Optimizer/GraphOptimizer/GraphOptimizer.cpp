@@ -2939,6 +2939,10 @@ llvm::Error glow::optimizeFunctionBeforeLowering(Function *F,
 // docs/GraphOptimizationPipeline.md
 llvm::Error glow::optimizeFunction(Function *F, const Backend &B,
                                    CompilationContext &cctx) {
+  // Skip optimizations if required.
+  if (!cctx.optimizationOpts.enableGraphOptz) {
+    return llvm::Error::success();
+  }
   LOG_SCOPE(F->getLogContext(), "glow::optimizeFunction")
 
   RETURN_IF_ERR(optimizeFunctionBeforeLowering(F, cctx));
