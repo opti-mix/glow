@@ -51,7 +51,7 @@ bool isConstantOperation(const Node *N, const Backend &backend) {
   }
   // If the operation is not supported by the backend, it cannot be computed at
   // compile-time.
-  if (!backend.isOpSupported(NodeInfo(*N))) {
+  if (!backend.shouldLower(N) && !backend.isOpSupported(NodeInfo(*N))) {
     return false;
   }
   if (llvm::isa<Placeholder>(N)) {
@@ -97,14 +97,6 @@ void run(Backend &backend, CompiledFunction &compiledF,
   context.movePlaceholderBindings().release();
 }
 
-/// Execute function \p F by the \p backend using the provided \p bindings and
-/// the compilation context \p cctx.
-void execute(Backend &backend, Function &F, PlaceholderBindings &bindings,
-             CompilationContext &cctx) {
-  auto compiledF = compile(backend, F, cctx);
-  run(backend, *compiledF, bindings);
-}
-
 /// Evaluates a provided constant operation \p C using the provided \p backend
 /// and using the compilation context \p cctx.
 /// \returns constant results.
@@ -112,6 +104,10 @@ std::vector<Constant *>
 evaluateConstantOperation(Backend &backend, CompilationContext &cctx, Node *C) {
   PlaceholderBindings bindings;
   assert(isConstantOperation(C, backend) && "Expected a constant expression");
+  // Constants and splats do not need to be constant evaluated.
+  if (isa<Constant>(C) || isa<SplatNode>(C)) {
+    return {};
+  }
   Module &mod = *C->getParent()->getParent();
   // Create a temporary function to perform the constant operation.
   Function *constEvaluationF = mod.createFunction(constEvaluationFunctionName);
@@ -128,7 +124,8 @@ evaluateConstantOperation(Backend &backend, CompilationContext &cctx, Node *C) {
   }
   // Run the temporary backend to perform this constant operation
   // evaluation.
-  execute(backend, *constEvaluationF, bindings, cctx);
+  EXIT_ON_ERR(executeFunction(backend, *constEvaluationF, bindings, cctx,
+                              /* isConstant */ true));
   // Get the results of the constant operation compile-time computation and
   // create new constants from it.
   std::vector<Constant *> constResults;
@@ -143,7 +140,42 @@ evaluateConstantOperation(Backend &backend, CompilationContext &cctx, Node *C) {
   mod.eraseFunction(constEvaluationF);
   return constResults;
 }
+
+/// Check if function \p F consists of constant operations only.
+llvm::Error verifyConstantFunction(Backend &backend, Function &F) {
+  for (auto &N : F.getNodes()) {
+    // Saving results is fine.
+    if (isa<SaveNode>(&N)) {
+      continue;
+    }
+    // Placeholders can be used just to save results.
+    if (isa<Placeholder>(&N)) {
+      if (N.hasOneUse()) {
+        auto SN = dyn_cast<SaveNode>(N.getUsers().begin()->getUser());
+        if (SN && SN->getPlaceholder() == &N) {
+          continue;
+        }
+      }
+      RETURN_ERR("Expected constant operation");
+    }
+    RETURN_ERR_IF_NOT(isConstantOperation(&N, backend),
+                      "Expected constant operation");
+  }
+  return llvm::Error::success();
+}
+
 } // namespace
+
+llvm::Error glow::executeFunction(Backend &backend, Function &F,
+                                  PlaceholderBindings &bindings,
+                                  CompilationContext &cctx, bool isConstant) {
+  if (isConstant) {
+    RETURN_IF_ERR(verifyConstantFunction(backend, F));
+  }
+  auto compiledF = compile(backend, F, cctx);
+  run(backend, *compiledF, bindings);
+  return llvm::Error::success();
+}
 
 /// Perform constant folding in the function \p F . Any non-trivial node (i.e.
 /// not a constant or a splat) that can be computed at compile-time is going to
@@ -151,8 +183,11 @@ evaluateConstantOperation(Backend &backend, CompilationContext &cctx, Node *C) {
 bool glow::ConstantFold::run(Function *F) {
   LOG_SCOPE(F->getLogContext(), "glow::constantFold")
   CompilationContext cctx;
-  // Just execute the operation. Do not try to optimize it at the graph level.
-  cctx.optimizationOpts.enableGraphOptz = false;
+  // Graph optimizations may be required to e.g. perform lowering of some nodes
+  // that are not supported natively.
+  cctx.optimizationOpts.enableGraphOptz = true;
+  // Do not recursively call constant folding.
+  cctx.optimizationOpts.enableConstantFolding = false;
   cctx.backendOpts.collectConstants = true;
   bool changed = false;
   // Backend to be used for compile-time computations.
@@ -204,8 +239,9 @@ std::vector<Constant *> glow::constantFold(Node *N) {
     return {};
   }
   CompilationContext cctx;
-  // Just execute the operation. Do not try to optimize it at the graph level.
   cctx.optimizationOpts.enableGraphOptz = false;
+  // Do not recursively call constant folding.
+  cctx.optimizationOpts.enableConstantFolding = false;
   cctx.backendOpts.collectConstants = true;
   return evaluateConstantOperation(*backend, cctx, N);
 }

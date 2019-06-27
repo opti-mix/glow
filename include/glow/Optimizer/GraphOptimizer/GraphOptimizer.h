@@ -75,6 +75,16 @@ llvm::Error optimizeFunctionBeforeLowering(Function *F,
 /// These constant correspond to results of the node. If no constant folding was
 /// possible and empty vector will be returned.
 std::vector<Constant *> constantFold(Node *N);
+
+/// Execute function \p F by the \p backend using the provided \p bindings and
+/// the compilation context \p cctx.
+/// Execute function \p F by the \p backend using the provided \p bindings and
+/// the compilation context \p cctx. If \p isConstant is true, the function
+/// should consist of constant operations only. \returns error if the function
+/// contains non-constant nodes in spite of \p isConstant being true.
+llvm::Error executeFunction(Backend &backend, Function &F,
+                            PlaceholderBindings &bindings,
+                            CompilationContext &cctx, bool isConstant);
 } // namespace glow
 
 #endif // GLOW_OPTIMIZER_GRAPHOPTIMIZER_GRAPHOPTIMIZER_H
