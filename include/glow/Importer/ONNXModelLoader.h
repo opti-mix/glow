@@ -200,9 +200,8 @@ protected:
 
   template <class LoaderType, class OpType>
   friend llvm::Error
-  constantFoldInLoader(ExecutionEngine &eeCF, Function *pFuncCF,
-                       LoaderType &loaderCF, LoaderType *pLoader,
-                       const OpType &op);
+  constantFoldInLoader(Function *pFuncCF, LoaderType &loaderCF,
+                       LoaderType *pLoader, const OpType &op);
 
 public:
   /// Creates a ONNX model loader to build \p F.

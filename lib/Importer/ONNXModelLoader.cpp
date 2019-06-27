@@ -1159,13 +1159,13 @@ ONNXModelLoader::foldOperator(const ONNX_NAMESPACE::NodeProto &op) {
   }
 
   // Create a temporary lightweight loader and execution engine.
-  ExecutionEngine eeCF;
+  // ExecutionEngine eeCF;
   Function *pfuncCF = G_.getParent()->createFunction("eval_const_fold__");
   ONNXModelLoader loaderCF(*pfuncCF);
   loaderCF.opsetVersion_ = opsetVersion_;
   bool fold_status = !errToBool(
       constantFoldInLoader<ONNXModelLoader, ONNX_NAMESPACE::NodeProto>(
-          eeCF, pfuncCF, loaderCF, this, op));
+          pfuncCF, loaderCF, this, op));
   G_.getParent()->eraseFunction(pfuncCF);
   return fold_status;
 }

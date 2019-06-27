@@ -20,6 +20,8 @@
 #include "glow/Base/Tensor.h"
 #include "glow/ExecutionEngine/ExecutionEngine.h"
 #include "glow/Graph/Graph.h"
+#include "glow/Optimizer/GraphOptimizer/FunctionPasses.h"
+#include "glow/Optimizer/GraphOptimizer/GraphOptimizer.h"
 
 #include "glow/Support/Error.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -144,6 +146,8 @@ protected:
   /// name.
   bool hasConstantByName(llvm::StringRef name) const;
 
+  void setNodeValue(llvm::StringRef name, NodeValue value);
+
 public:
   /// \returns the NodeValue that was registered with the name \p name.
   /// \pre hasNodeByName(name)
@@ -200,9 +204,8 @@ public:
 /// Execution Engine eeCF, loader \p loaderCF, and associated temporary
 /// function \p pFuncCF.
 template <class LoaderType, class OpType>
-llvm::Error constantFoldInLoader(ExecutionEngine &eeCF, Function *pFuncCF,
-                                 LoaderType &loaderCF, LoaderType *pLoader,
-                                 const OpType &op) {
+llvm::Error constantFoldInLoader(Function *pFuncCF, LoaderType &loaderCF,
+                                 LoaderType *pLoader, const OpType &op) {
   PlaceholderBindings bindingCF;
   std::vector<Tensor *> pTensorVec;
   Module *pModCF = pFuncCF->getParent();
@@ -220,8 +223,13 @@ llvm::Error constantFoldInLoader(ExecutionEngine &eeCF, Function *pFuncCF,
     auto *result = bindingCF.allocate(SN->getPlaceholder());
     pTensorVec.push_back(result);
   }
-  eeCF.compile(CompilationMode::Infer, pFuncCF);
-  eeCF.run(bindingCF);
+  pFuncCF->setState(FunctionState::FuncLoaded);
+  CompilationContext cctx;
+  cctx.compMode = CompilationMode::Infer;
+  cctx.optimizationOpts.enableConstantFolding = false;
+  std::unique_ptr<Backend> backend(createBackend("Interpreter"));
+  EXIT_ON_ERR(executeFunction(*backend, *pFuncCF, bindingCF, cctx),
+              /* isConstant */ true);
 
   // Using the graph output, place constant nodes in the original graph.
   for (int i = 0; i < op.output_size(); i++) {

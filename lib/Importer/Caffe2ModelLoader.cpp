@@ -546,12 +546,12 @@ Caffe2ModelLoader::foldOperator(const caffe2::OperatorDef &op) {
   // Create a temporary lightweight loader, execution engine and add
   // foldable constants to current loader using the temporary loader
   // loaderCF
-  ExecutionEngine eeCF;
+  // ExecutionEngine eeCF;
   Function *pfuncCF = G_.getParent()->createFunction("eval_const_fold__");
   Caffe2ModelLoader loaderCF(*pfuncCF, nullptr);
   bool fold_status =
       !errToBool(constantFoldInLoader<Caffe2ModelLoader, caffe2::OperatorDef>(
-          eeCF, pfuncCF, loaderCF, this, op));
+          pfuncCF, loaderCF, this, op));
   G_.getParent()->eraseFunction(pfuncCF);
   return fold_status;
 }
@@ -786,7 +786,7 @@ llvm::Error Caffe2ModelLoader::loadOperator(const caffe2::OperatorDef &op) {
     NodeValue finalNode = llvm::isa<ConcatNode>(node)
                               ? NodeValue(node, ConcatNode::ResultIdx)
                               : NodeValue(node, ReshapeNode::ResultIdx);
-    nodeValueByName_[op.output(0)] = finalNode;
+    setNodeValue(op.output(0), finalNode);
     // Concat may have a second output in Caffe2 (split_info), but we don't
     // use it for inference
     return llvm::Error::success();

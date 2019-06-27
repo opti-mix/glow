@@ -15,6 +15,7 @@
  */
 
 #include "glow/Importer/ProtobufLoader.h"
+#include "glow/Optimizer/GraphOptimizer/GraphOptimizer.h"
 #include "llvm/Support/CommandLine.h"
 #include <string>
 
@@ -37,7 +38,10 @@ bool isArrayConstant(llvm::ArrayRef<size_t> a) {
 
 void setConstantFoldLoaderOpsFlag(bool flag) { isConstFoldLoaderOps = flag; }
 
-bool getConstantFoldLoaderOpsFlag() { return isConstFoldLoaderOps; }
+bool getConstantFoldLoaderOpsFlag() {
+  // return false;
+  return isConstFoldLoaderOps;
+}
 
 bool ProtobufLoader::isConstantFoldable(llvm::SmallVector<NodeValue, 4> &inputs,
                                         std::string typeName) const {
@@ -124,7 +128,7 @@ llvm::Error ProtobufLoader::createAndRegisterConstant(llvm::StringRef name,
   // Note: We do not support training from models loaded from protos, so
   // trainable is always set to false here.
   Constant *node = G_.getParent()->createConstant(name, std::move(tensor));
-  nodeValueByName_[name] = node->getOutput();
+  setNodeValue(name, node->getOutput());
   return llvm::Error::success();
 }
 
@@ -155,7 +159,7 @@ ProtobufLoader::createAndRegisterPlaceholder(llvm::StringRef name, TypeRef T) {
       !hasNodeByName(name),
       llvm::Twine("Creating an already existing node ", name).str());
   Placeholder *node = G_.getParent()->createPlaceholder(T, name, false);
-  nodeValueByName_[name] = node->getOutput();
+  setNodeValue(name, node->getOutput());
   return node;
 }
 
@@ -200,4 +204,20 @@ ProtobufLoader::ProtobufLoader(llvm::ArrayRef<const char *> tensorNames,
   }
 }
 
+void ProtobufLoader::setNodeValue(llvm::StringRef name, NodeValue value) {
+  // auto *node = value.getNode();
+  // bool hasParent = (node->getParent() != nullptr);
+  // if (!hasParent) {
+  //   node->setParent(&G_);
+  // }
+  // auto results = constantFold(node);
+  // if (!results.empty()) {
+  //   value.replaceAllUsesOfWith(results[value.getResNo()]);
+  //   value = results[value.getResNo()];
+  // }
+  nodeValueByName_[name] = value;
+  // if (!hasParent) {
+  //   node->setParent(nullptr);
+  // }
+}
 }; // namespace glow

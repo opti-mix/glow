@@ -209,7 +209,7 @@ protected:
                       "Can't register more than outputs in the operation.");
     numOutputs = (numOutputs < 0) ? op.output_size() : numOutputs;
     for (int i = 0; i < numOutputs; i++) {
-      nodeValueByName_[op.output(i)] = NodeValue(node, i);
+      setNodeValue(op.output(i), NodeValue(node, i));
     }
     return llvm::Error::success();
   }
@@ -392,7 +392,7 @@ protected:
 
     // LRN in Caffe2 has a scale_ output, but I believe it's unused for
     // inference. So explicitly only set output 0.
-    nodeValueByName_[op.output(0)] = N->getResult();
+    setNodeValue(op.output(0), N->getResult());
     return llvm::Error::success();
   }
 
@@ -561,7 +561,7 @@ protected:
     for (int i = 0, e = op.output_size(); i < e; i++) {
       // Each output from Split is a SliceNode which only has a single output,
       // so only use 0 here as the node value result.
-      nodeValueByName_[op.output(i)] = outputs[i]->getResult();
+      setNodeValue(op.output(i), outputs[i]->getResult());
     }
     return llvm::Error::success();
   }
@@ -629,7 +629,7 @@ protected:
 
     // Caffe2 sometimes outputs old_shape which goes unused. We do not currently
     // support it, so explicitly only set the first output.
-    nodeValueByName_[op.output(0)] = node->getResult();
+    setNodeValue(op.output(0), node->getResult());
     return llvm::Error::success();
   }
 
@@ -672,7 +672,7 @@ protected:
   llvm::Error loadIdentity(const OpType &op, ArgumentDictionaryTy &dict) {
     NodeValue in;
     ASSIGN_VALUE_OR_RETURN_ERR(in, getNodeValueByName(op.input(0)));
-    nodeValueByName_[op.output(0)] = in;
+    setNodeValue(op.output(0), in);
     return llvm::Error::success();
   }
 

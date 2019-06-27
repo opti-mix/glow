@@ -112,9 +112,8 @@ class Caffe2ModelLoader
 
   template <class LoaderType, class OpType>
   friend llvm::Error
-  constantFoldInLoader(ExecutionEngine &eeCF, Function *pFuncCF,
-                       LoaderType &loaderCF, LoaderType *pLoader,
-                       const OpType &op);
+  constantFoldInLoader(Function *pFuncCF, LoaderType &loaderCF,
+                       LoaderType *pLoader, const OpType &op);
 
 public:
   /// Loads the caffe2 model that's represented by a network description file,
