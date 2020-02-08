@@ -225,6 +225,44 @@ protected:
   void dumpOperands(llvm::raw_ostream &os) const;
 };
 
+/// Different stages of processing an IR instruction.
+enum IRInstructionExecutionStage {
+  /// Instruction is going to be processed.
+  PREPROCESSING,
+  /// Instruction is being processed.
+  PROCESSING,
+  /// Instruction was just processed.
+  POSTPROCESSING,
+  /// Instruction processing is done.
+  DONE,
+};
+
+/// The handler type for processing instructions during the interpreter run.
+using IRInstructionProcessingFn = std::function<IRInstructionExecutionStage(
+    const Instruction *, IRInstructionExecutionStage executionStage)>;
+
+/// The interface class for IR instruction handlers. Useful for intercepting IR
+/// instructions processing.
+class IRInstructionProcessingHandler {
+public:
+  IRInstructionProcessingHandler() = default;
+  virtual ~IRInstructionProcessingHandler() = default;
+  /// Set the handler to be used for IR instruction processing.
+  virtual void
+  setIRInstructionProcessingHandler(IRInstructionProcessingFn hook) {
+    handler_ = hook;
+  }
+  /// \returns the handler to be used for IR instructions processing.
+  virtual const IRInstructionProcessingFn &
+  getIRInstructionProcessingHandler() const {
+    return handler_;
+  }
+
+protected:
+  /// The handler function to be used for instruction processing.
+  glow::IRInstructionProcessingFn handler_;
+};
+
 //===----------------------------------------------------------------------===//
 // TaggedListTraits for glow::Instruction
 //===----------------------------------------------------------------------===//

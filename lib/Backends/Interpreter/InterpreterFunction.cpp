@@ -58,6 +58,8 @@ void InterpreterFunction::addConstant(std::string name, Tensor *T) {
 
 Error InterpreterFunction::execute(ExecutionContext *context) {
   BoundInterpreterFunction boundFunc(constants_);
+  boundFunc.setIRInstructionProcessingHandler(
+      getIRInstructionProcessingHandler());
   auto res = boundFunc.execute(F_.get(), context);
   {
     TRACE_EVENT_SCOPE(context, TraceLevel::RUNTIME, "processInstrumentation");
@@ -229,7 +231,12 @@ Error BoundInterpreterFunction::execute(IRFunction *F,
     }
   }
 
-// Do the forward pass.
+  // Do the forward pass.
+  if (!getIRInstructionProcessingHandler()) {
+    // This is the fast version without hooks.
+    // Dispatch the interpreter on each instruction in the program:
+    for (const auto &I : F->getInstrs()) {
+      switch (I.getKind()) {
 #define DEF_VALUE(CLASS, NAME)
 #define DEF_INSTR(CLASS, NAME)                                                 \
   case Kinded::Kind::CLASS##Kind: {                                            \
@@ -237,13 +244,48 @@ Error BoundInterpreterFunction::execute(IRFunction *F,
     break;                                                                     \
   }
 #define DEF_BACKEND_SPECIFIC_INSTR(CLASS, NAME)
-  // Dispatch the interpreter on each instruction in the program:
-  for (const auto &I : F->getInstrs()) {
-    switch (I.getKind()) {
 #include "glow/AutoGenInstr.def"
 
-    default:
-      llvm_unreachable("Invalid instruction.");
+      default:
+        glow::errs() << "Invalid instruction: " << &I << "\n";
+        llvm_unreachable("Invalid instruction.");
+      }
+    }
+  } else {
+    auto &irInstructionProcessingHandler = getIRInstructionProcessingHandler();
+    // Dispatch the interpreter on each instruction in the program:
+    for (const auto &I : F->getInstrs()) {
+      // Preprocess the instruction.
+      auto executionStage = irInstructionProcessingHandler(
+          &I, IRInstructionExecutionStage::PREPROCESSING);
+      // Proceed with standard processing if needed.
+      if (executionStage <= IRInstructionExecutionStage::PROCESSING) {
+        executionStage = irInstructionProcessingHandler(
+            &I, IRInstructionExecutionStage::PROCESSING);
+        assert(executionStage > PREPROCESSING &&
+               "Execution stage should be at least PROCESSING");
+        if (executionStage == IRInstructionExecutionStage::PROCESSING) {
+          switch (I.getKind()) {
+#define DEF_VALUE(CLASS, NAME)
+#define DEF_INSTR(CLASS, NAME)                                                 \
+  case Kinded::Kind::CLASS##Kind: {                                            \
+    fwd##CLASS(llvm::cast<CLASS>(&I));                                         \
+    break;                                                                     \
+  }
+#define DEF_BACKEND_SPECIFIC_INSTR(CLASS, NAME)
+#include "glow/AutoGenInstr.def"
+
+          default:
+            glow::errs() << "Invalid instruction: " << &I << "\n";
+            llvm_unreachable("Invalid instruction.");
+          }
+        }
+      }
+      // Postprocess the instruction.
+      if (executionStage <= IRInstructionExecutionStage::POSTPROCESSING) {
+        irInstructionProcessingHandler(
+            &I, IRInstructionExecutionStage::POSTPROCESSING);
+      }
     }
   }
 
